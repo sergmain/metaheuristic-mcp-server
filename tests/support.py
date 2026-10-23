@@ -108,3 +108,51 @@ async def call(session, tool: str, **arguments) -> tuple[dict, str | None, bool]
     header = json.loads(result.content[0].text)
     text = result.content[1].text if len(result.content) > 1 else None
     return header, text, bool(result.isError)
+
+
+@asynccontextmanager
+async def connect_plain(home: Path, stderr_path: Path):
+    """A ClientSession to `python -m mh_mcp_server` started as a plain child process - no job object around it,
+    unlike the SDK's Windows stdio_client. On exit the server's stdin is closed and the server exits on its own;
+    nothing is killed."""
+    import subprocess
+
+    import anyio
+    from anyio.streams.text import TextReceiveStream
+    from mcp import ClientSession, types
+    from mcp.shared.message import SessionMessage
+
+    env = {**os.environ, "MH_MCP_SERVER_HOME": str(home), "PYTHONPATH": str(SRC)}
+    with open(stderr_path, "wb") as err:
+        proc = await anyio.open_process([sys.executable, "-m", "mh_mcp_server"], env=env, cwd=str(REPO),
+                                        stderr=err)
+    read_writer, read_stream = anyio.create_memory_object_stream(0)
+    write_stream, write_reader = anyio.create_memory_object_stream(0)
+
+    async def pump_stdout():
+        buffer = ""
+        async with read_writer:
+            async for chunk in TextReceiveStream(proc.stdout, encoding="utf-8"):
+                lines = (buffer + chunk).split("\n")
+                buffer = lines.pop()
+                for line in lines:
+                    if line.strip():
+                        await read_writer.send(SessionMessage(types.JSONRPCMessage.model_validate_json(line)))
+
+    async def pump_stdin():
+        async with write_reader:
+            async for message in write_reader:
+                data = message.message.model_dump_json(by_alias=True, exclude_none=True) + "\n"
+                await proc.stdin.send(data.encode("utf-8"))
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(pump_stdout)
+        tg.start_soon(pump_stdin)
+        async with ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            yield proc, session
+        await write_stream.aclose()
+        await proc.stdin.aclose()
+        with anyio.fail_after(20):
+            await proc.wait()
+        tg.cancel_scope.cancel()

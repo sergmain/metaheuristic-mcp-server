@@ -23,7 +23,7 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mh_mcp_server import execution, transcript
+from mh_mcp_server import execution, jobs, transcript
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
@@ -31,6 +31,7 @@ from mh_mcp_server.session_id import is_valid_session_id
 log = logging.getLogger("mh_mcp_server")
 
 TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
+TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
 
 
 def build_server(rt: Runtime) -> FastMCP:
@@ -57,6 +58,21 @@ def build_server(rt: Runtime) -> FastMCP:
         (state "running", jobId) and is never killed. Content 0: JSON header (exitCode, cwd, lines, logPath, ...);
         content 1: the output, head and tail kept within maxLines."""
         return await execution.execute_command(rt, sessionId, command, cwd, timeoutSeconds, maxLines)
+
+    @mcp.tool(name="startJob", structured_output=False)
+    async def start_job(sessionId: str, command: str, cwd: str | None = None, name: str | None = None) -> Reply:
+        """Starts PowerShell text as a background job in the session's working directory and environment and
+        returns at once with its jobId and logPath. A job never blocks the session and never changes its cwd or
+        environment. Use waitJob to follow it; it is never killed."""
+        return await anyio.to_thread.run_sync(jobs.start_job, rt, sessionId, command, cwd, name)
+
+    @mcp.tool(name="waitJob", structured_output=False)
+    async def wait_job(sessionId: str, jobId: str, maxSeconds: int | None = None, sinceLine: int = 0,
+                       untilRegex: str | None = None, maxLines: int | None = None) -> Reply:
+        """Waits on a job until it is done (or lost), a line after sinceLine matches untilRegex (then `matched`), or
+        maxSeconds pass. Returns its state, exitCode when done, and the lines after sinceLine (the tail kept within
+        maxLines); pass the returned nextLine back as sinceLine so no line is returned twice."""
+        return await jobs.wait_job(rt, sessionId, jobId, maxSeconds, sinceLine, untilRegex, maxLines)
 
     install_call_handler(mcp, rt)
     return mcp

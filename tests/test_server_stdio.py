@@ -41,11 +41,13 @@ def test_two_sessions_run_concurrently_on_one_connection(tmp_path: Path):
     anyio.run(main)
 
 
-def test_tools_list_is_exactly_the_three_tools_of_phase_7(tmp_path: Path):
+def test_tools_list_is_exactly_the_tools_of_this_version(tmp_path: Path):
+    # Phase 7: three tools; Phase 8 adds startJob and waitJob
     async def main():
         async with connect(write_home(tmp_path)) as session:
             tools = await session.list_tools()
-            assert sorted(t.name for t in tools.tools) == ["executeCommand", "getSession", "getSessionId"]
+            assert sorted(t.name for t in tools.tools) == ["executeCommand", "getSession", "getSessionId",
+                                                           "startJob", "waitJob"]
 
     anyio.run(main)
 
