@@ -66,9 +66,10 @@ def main(argv: list[str] | None = None) -> int:
     setup_logging(home)
 
     from mh_mcp_server.execution import production_runtime
-    from mh_mcp_server.server import build_server
+    from mh_mcp_server.server import build_server, serve_stdio
     logging.getLogger("mh_mcp_server").info("starting %s, home %s", __version__, home)
-    build_server(production_runtime(home, config)).run(transport="stdio")
+    import anyio
+    anyio.run(serve_stdio, build_server(production_runtime(home, config)))
     return 0
 
 

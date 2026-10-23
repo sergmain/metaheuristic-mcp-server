@@ -22,6 +22,7 @@ import pydantic
 from mcp import types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.stdio import stdio_server
 
 from mh_mcp_server import execution, files, jobs, transcript
 from mh_mcp_server.environment import mask
@@ -139,6 +140,27 @@ def install_call_handler(mcp: FastMCP, rt: Runtime) -> None:
         return types.ServerResult(types.CallToolResult(content=contents, isError=reply.is_error))
 
     mcp._mcp_server.request_handlers[types.CallToolRequest] = handle
+
+
+async def serve_stdio(mcp: FastMCP) -> None:
+    """FastMCP's stdio loop, except that the end of stdin - the client is gone - also ends the calls in flight.
+
+    The SDK's loop stops reading at EOF and then waits for every running handler, so a server whose client had died
+    lived on until its longest call returned (up to the 58 s wait limit). A call cut short here loses nothing: its
+    command runs under its own supervisor and is a job from then on (no delivered.json), and the foreground lock of a
+    server that has exited is stale."""
+    server = mcp._mcp_server
+    async with stdio_server() as (read_stream, write_stream):
+        forward_send, forward_receive = anyio.create_memory_object_stream(0)
+        async with anyio.create_task_group() as tg:
+            async def forward() -> None:
+                async with forward_send:
+                    async for message in read_stream:
+                        await forward_send.send(message)
+                tg.cancel_scope.cancel()
+
+            tg.start_soon(forward)
+            await server.run(forward_receive, write_stream, server.create_initialization_options())
 
 
 async def _run_tool(tool_manager, name: str, arguments: dict[str, Any]) -> Reply:
