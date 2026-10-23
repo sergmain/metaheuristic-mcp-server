@@ -29,7 +29,7 @@ def test_defaults_when_the_file_is_absent():
     assert c.read_max_bytes == 49152
     assert c.write_roots == (Path("C:/sandbox/_work"),)
     assert c.read_roots == (Path("C:/sandbox/_work"), Path("C:/_mh/mhbp_home-PostgreSQL-disk-storage"))
-    assert dict(c.env) == {"PYTHONUTF8": "1"}
+    assert dict(c.env) == {"PYTHONUTF8": "1", "NO_COLOR": "1"}
     assert c.path_prepend == ()
     assert c.secret_names == frozenset()
     assert c.excluded_paths == ()
@@ -63,7 +63,7 @@ def test_each_key_overrides_its_default(toml: str, attribute: str, expected):
 
 def test_env_values_are_added_to_the_default_env():
     c = load_config(HOME, text_of('[env]\nPGPASSWORD = "pw"\nPYTHONUTF8 = "0"'))
-    assert dict(c.env) == {"PYTHONUTF8": "0", "PGPASSWORD": "pw"}
+    assert dict(c.env) == {"PYTHONUTF8": "0", "NO_COLOR": "1", "PGPASSWORD": "pw"}
 
 
 def test_a_key_left_out_keeps_its_default_beside_an_overridden_one():

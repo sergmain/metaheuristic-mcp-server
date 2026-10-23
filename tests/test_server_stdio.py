@@ -245,3 +245,17 @@ def test_a_failing_command_reports_its_exit_code_and_output(tmp_path: Path):
             assert header["exitCode"] == 9 and text == "out" and header["lines"] == 1
 
     anyio.run(main)
+
+
+def test_a_command_that_does_not_parse_comes_back_as_plain_text(tmp_path: Path):
+    """Found 2026-10-23 through Desktop (0.1.3): the prologue sets PlainText inside command.ps1, and a command that does
+    not parse stops pwsh before any line of that file runs - so the ParserError came back in ANSI colours."""
+    async def main():
+        async with connect(write_home(tmp_path)) as session:
+            header, text, is_error = await call(session, "executeCommand", sessionId=SID_A, command="'a' +")
+            assert not is_error, header
+            assert header["exitCode"] == 1 and "stateNotCaptured" in header.get("notes", []), header
+            assert "ParserError" in text
+            assert "\x1b[" not in text, text
+
+    anyio.run(main)

@@ -39,6 +39,10 @@ prepend = []
 
 [env]
 PYTHONUTF8 = "1"
+# pwsh 7.2+ starts with $PSStyle.OutputRendering = PlainText when NO_COLOR is set. The wrapper's prologue sets it too,
+# but a command that does not parse stops pwsh before the prologue runs, and its ParserError came back in ANSI colours.
+# Child programs that honour NO_COLOR (git, pytest, ...) print plain text too - which is what a log file wants.
+NO_COLOR = "1"
 
 [secrets]
 names = []
