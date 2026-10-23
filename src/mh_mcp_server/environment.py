@@ -14,11 +14,14 @@ from __future__ import annotations
 import os
 from typing import Iterable, Literal, Mapping, Sequence
 
-# decision 12 (b), verbatim
+# decision 12 (b), verbatim - then the per-logon variables Windows sets in every logon session's environment and
+# keeps out of the registry, found missing by plan 051 Phase 10 probe 2 (the JB terminal has them)
 VOLATILE: tuple[str, ...] = (
     "SYSTEMROOT", "WINDIR", "COMPUTERNAME", "USERNAME", "USERDOMAIN", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
     "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+    "SYSTEMDRIVE", "ALLUSERSPROFILE", "PUBLIC", "PROGRAMW6432", "COMMONPROGRAMW6432", "COMMONPROGRAMFILES(X86)",
+    "LOGONSERVER", "SESSIONNAME", "USERDOMAIN_ROAMINGPROFILE",
 )
 _VOLATILE_FOLDED = frozenset(name.casefold() for name in VOLATILE)
 

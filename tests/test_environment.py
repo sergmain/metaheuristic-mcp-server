@@ -11,11 +11,13 @@ def compose(machine=None, user=None, server_env=None, fixed=None, config_env=Non
                        delta_set or {}, delta_removed)
 
 
-def test_volatile_is_the_list_of_decision_12():
+def test_volatile_is_the_list_of_decision_12_plus_the_per_logon_variables():
     assert VOLATILE == ("SYSTEMROOT", "WINDIR", "COMPUTERNAME", "USERNAME", "USERDOMAIN", "USERPROFILE",
                         "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PROGRAMDATA",
                         "PROGRAMFILES", "PROGRAMFILES(X86)", "COMMONPROGRAMFILES", "PROCESSOR_ARCHITECTURE",
-                        "NUMBER_OF_PROCESSORS")
+                        "NUMBER_OF_PROCESSORS",
+                        "SYSTEMDRIVE", "ALLUSERSPROFILE", "PUBLIC", "PROGRAMW6432", "COMMONPROGRAMW6432",
+                        "COMMONPROGRAMFILES(X86)", "LOGONSERVER", "SESSIONNAME", "USERDOMAIN_ROAMINGPROFILE")
 
 
 def test_a_later_layer_wins_at_every_step():
@@ -74,6 +76,17 @@ def test_a_server_variable_outside_volatile_is_absent():
 
 def test_a_volatile_name_matches_case_insensitively():
     assert compose(server_env={"SystemRoot": "C:\\Windows"}) == {"SystemRoot": "C:\\Windows"}
+
+
+LOGON_SESSION = {"SystemDrive": "C:", "ALLUSERSPROFILE": "C:\\ProgramData", "PUBLIC": "C:\\Users\\Public",
+                 "ProgramW6432": "C:\\Program Files", "CommonProgramW6432": "C:\\Program Files\\Common Files",
+                 "CommonProgramFiles(x86)": "C:\\Program Files (x86)\\Common Files", "LOGONSERVER": "\\\\BOX",
+                 "SESSIONNAME": "Console", "USERDOMAIN_ROAMINGPROFILE": "BOX"}
+
+
+def test_the_per_logon_variables_of_the_server_reach_a_command():
+    # Found by plan 051 Phase 10 probe 2: the JB terminal has them, a command did not (none is in the registry).
+    assert compose(server_env=LOGON_SESSION) == LOGON_SESSION
 
 
 def test_mask_replaces_every_occurrence():

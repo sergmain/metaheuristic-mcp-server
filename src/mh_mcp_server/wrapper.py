@@ -6,6 +6,9 @@ exit code, or 1 when it has none; otherwise 0. This is `pwsh -Command`'s rule wi
 
 The epilogue, in `finally`, writes `state-out.json` - `{"cwd", "envSet", "envRemoved"}`, UTF-8 without BOM: the
 working directory at the end and the process environment's difference against its start.
+
+The prologue sets `$PSStyle.OutputRendering = 'PlainText'`: output goes to a file, and pwsh would otherwise wrap
+error records (a native program's stderr merged with `2>&1`) and Select-String matches in ANSI escape codes.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 _PROLOGUE = """\
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $PSStyle.OutputRendering = 'PlainText'
 $__mcpEnv = @{}; foreach ($e in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) { $__mcpEnv[$e.Key] = $e.Value }
 $__mcpOk = $true; $__mcpTerminated = $false
 try {

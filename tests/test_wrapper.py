@@ -107,6 +107,14 @@ def test_characterization_a_java_program_printing_cyrillic_into_output_log(tmp_p
     assert (call_dir / "output.log").read_bytes() == b"??????\r\nCp1252\r\n"
 
 
+def test_merged_stderr_of_a_native_program_carries_no_ansi_codes(tmp_path: Path):
+    # Found by plan 051 Phase 10 probe 2 (`java -version 2>&1` came back as ESC[31;1m...ESC[0m through Desktop).
+    _, out, _, _ = run_wrapped(tmp_path, "cmd /c \"echo native-err 1>&2\" 2>&1", tmp_path)
+    assert "native-err" in out
+    assert "\x1b[" not in out
+    assert out.strip() == "native-err"
+
+
 def test_ps_literal_doubles_single_quotes():
     assert ps_literal("C:/a'b/state-out.json") == "'C:/a''b/state-out.json'"
 
