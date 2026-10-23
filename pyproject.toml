@@ -9,3 +9,4 @@ dependencies = ["mcp>=1.12,<2"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q --basetemp=C:/sandbox/_work/temp/mh-mcp-pytest"
+filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]
