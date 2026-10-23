@@ -41,6 +41,12 @@ is an error. The defaults are the Windows layout (`[execution] defaultCwd`, `[pa
 also covers every sibling that starts with the same text (`C:\Windows` covers `C:\WindowsApps`) and an item ending in
 a separator covers that directory only (`C:\Windows\`).
 
+`executeCommand` and `startJob` refuse with `PATH_EXCLUDED` too (since 0.1.5): `"where": "command"` when the command
+text contains an item - the same normalization, and a run of separators counts as one (`C:\\Windows`, `C://Windows`) -
+and `"where": "cwd"` when the directory the command would run in, the given `cwd` or the session's own, lies in one.
+On the command path only a path written out in the text is seen; one built at run time (`$env:windir`, `Join-Path`,
+`cd ..` followed by a name) is not, so this check is a tripwire, not a sandbox - only the file tools' check is complete.
+
 ## Tests
 
 `python -m pytest` in the clone - real files, real `pwsh`, real processes, no mocks. The stdio tests start the server

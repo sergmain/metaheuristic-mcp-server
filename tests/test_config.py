@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from mh_mcp_server.config import (Config, ConfigError, DEFAULT_CONFIG_TOML, HOME_VARIABLE, excluded_by, is_under,
-                                  load_config, read_text_if_exists, resolve_home)
+from mh_mcp_server.config import (Config, ConfigError, DEFAULT_CONFIG_TOML, HOME_VARIABLE, excluded_by,
+                                  excluded_in_text, is_under, load_config, read_text_if_exists, resolve_home)
 
 HOME = Path("C:/_mh/mh-mcp-server-test-home")
 
@@ -195,6 +195,38 @@ def test_excluded_by_is_none_outside_every_item_and_for_no_items():
     assert excluded_by(Path("C:/sandbox/_work/temp/a.txt"), EXCLUDED) is None
     assert excluded_by(Path("C:/Windows"), ()) is None
     assert excluded_by(Path("C:/Windows"), ("",)) is None
+
+
+@pytest.mark.parametrize("command", [
+    r"Get-Content C:\Windows\System32\drivers\etc\hosts",
+    "Get-Content C:/Windows/System32/drivers/etc/hosts",
+    r"Get-Content 'c:\WINDOWS\win.ini'",
+    r"python -c open('C:\\Windows\\win.ini')",
+    "Get-ChildItem C://Windows",
+    r"'a'; cmd /c type C:\Windows\win.ini && 'b'",
+])
+def test_excluded_in_text_finds_a_written_out_path_in_any_spelling(command: str):
+    assert excluded_in_text(command, EXCLUDED) == "C:\\Windows"
+
+
+def test_excluded_in_text_names_the_item_found_and_keeps_the_prefix_rule():
+    assert excluded_in_text(r"$p = 'C:\sandbox\_work\secret\a.txt'; Get-Content $p", EXCLUDED) == \
+        "c:/sandbox/_work/Secret"
+    # C:\Windows covers C:\WindowsApps too; an item ending in a separator covers one directory only
+    assert excluded_in_text(r"dir C:\WindowsApps", EXCLUDED) == "C:\\Windows"
+    assert excluded_in_text(r"dir C:\WindowsApps", ("C:\\Windows\\",)) is None
+
+
+def test_excluded_in_text_is_none_outside_every_item_and_for_no_items():
+    assert excluded_in_text(r"Get-Content C:\sandbox\_work\temp\a.txt", EXCLUDED) is None
+    assert excluded_in_text(r"Get-Content C:\Windows\win.ini", ()) is None
+    assert excluded_in_text(r"Get-Content C:\Windows\win.ini", ("",)) is None
+
+
+def test_excluded_in_text_does_not_see_a_path_built_at_run_time():
+    # the documented limit: a tripwire for paths written out in the command, not a sandbox
+    assert excluded_in_text(r"Get-Content $env:windir\win.ini", EXCLUDED) is None
+    assert excluded_in_text("Get-Content (Join-Path 'C:' 'Windows' 'win.ini')", EXCLUDED) is None
 
 
 def test_config_is_immutable():

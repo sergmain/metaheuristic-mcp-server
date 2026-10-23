@@ -20,7 +20,7 @@ import anyio
 import anyio.to_thread
 
 from mh_mcp_server.calls import allocate_call, call_state, read_call, read_exit, runs_dir
-from mh_mcp_server.execution import Reply, Runtime, refusal, resolve_call_cwd, spawn_call
+from mh_mcp_server.execution import Reply, Runtime, admit_call, refusal, spawn_call
 from mh_mcp_server.output import Line, cap_tail, decode_line
 from mh_mcp_server.session_id import is_valid_session_id
 from mh_mcp_server.session_state import load_state
@@ -32,7 +32,7 @@ def start_job(rt: Runtime, session_id: str, command: str, cwd: str | None = None
     if not is_valid_session_id(session_id):
         return refusal("BAD_SESSION_ID")
     state = load_state(rt.home, session_id, rt.config.default_cwd)
-    resolved = resolve_call_cwd(rt, state, cwd)
+    resolved = admit_call(rt, state, command, cwd)
     if isinstance(resolved, Reply):
         return Reply(resolved.header, None, True, None, session_id)
     job_cwd, notes = resolved

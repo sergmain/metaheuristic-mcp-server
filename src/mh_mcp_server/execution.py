@@ -26,7 +26,7 @@ import mh_mcp_server
 from mh_mcp_server import __version__
 from mh_mcp_server.calls import (allocate_call, call_state, read_call, read_exit, runs_dir, supervisor_argv,
                                  write_call)
-from mh_mcp_server.config import Config, is_under
+from mh_mcp_server.config import Config, excluded_by, excluded_in_text, is_under
 from mh_mcp_server.environment import VOLATILE, compose_env, read_registry_env
 from mh_mcp_server.output import read_head_tail
 from mh_mcp_server.processes import process_alive, process_created, spawn_detached
@@ -130,6 +130,22 @@ def resolve_call_cwd(rt: Runtime, state: SessionState, cwd: str | None) -> tuple
     return path, []
 
 
+def admit_call(rt: Runtime, state: SessionState, command: str, cwd: str | None) -> tuple[Path, list[str]] | Reply:
+    """The directory a command runs in, once the command is admitted: refused when its text names an [excluded] path
+    (`excluded_in_text` - a path written out, not one built at run time) or when the directory - the given `cwd` or the
+    session's own - lies in one; otherwise as `resolve_call_cwd` decides."""
+    named = excluded_in_text(command, rt.config.excluded_paths)
+    if named is not None:
+        return refusal("PATH_EXCLUDED", where="command", excluded=named)
+    resolved = resolve_call_cwd(rt, state, cwd)
+    if isinstance(resolved, Reply):
+        return resolved
+    excluded = excluded_by(resolved[0], rt.config.excluded_paths)
+    if excluded is not None:
+        return refusal("PATH_EXCLUDED", where="cwd", cwd=str(resolved[0]), excluded=excluded)
+    return resolved
+
+
 # ==================== getSessionId / getSession ====================
 
 def get_session_id(rt: Runtime) -> Reply:
@@ -211,7 +227,7 @@ async def execute_command(rt: Runtime, session_id: str, command: str, cwd: str |
 
 def _start_foreground(rt: Runtime, session_id: str, command: str, cwd: str | None) -> _Foreground | Reply:
     state = load_state(rt.home, session_id, rt.config.default_cwd)
-    resolved = resolve_call_cwd(rt, state, cwd)
+    resolved = admit_call(rt, state, command, cwd)
     if isinstance(resolved, Reply):
         return Reply(resolved.header, None, True, None, session_id)
     call_cwd, notes = resolved

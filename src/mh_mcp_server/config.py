@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 import types
 from dataclasses import dataclass
@@ -160,6 +161,25 @@ def excluded_by(path: Path, excluded: Sequence[str]) -> str | None:
 
 def _separators_and_case(text: str) -> str:
     return text.replace("/", "\\").casefold()
+
+
+def excluded_in_text(text: str, excluded: Sequence[str]) -> str | None:
+    """The first item of `excluded` that occurs anywhere in `text` - a command's source - else None: case ignored, /
+    and \\ alike as in `excluded_by`, and a run of separators counted as one, so `C:\\\\Windows` and `C://Windows` are
+    found too. Only a path written out in the text is found; one built at run time (`$env:windir`, `Join-Path`,
+    `cd ..` followed by a name) is not - the file tools are the complete guard, this one is a tripwire."""
+    folded = _single_separators(_separators_and_case(text))
+    for item in excluded:
+        if item and _single_separators(_separators_and_case(item)) in folded:
+            return item
+    return None
+
+
+def _single_separators(text: str) -> str:
+    return _SEPARATOR_RUN.sub("\\\\", text)
+
+
+_SEPARATOR_RUN = re.compile(r"\\{2,}")
 
 
 def _resolved_parts(path: Path) -> tuple[str, ...]:
