@@ -14,11 +14,12 @@ from support import call, connect, connect_plain, write_home
 SID = "20261023-170000-0000aa"
 
 
-def test_tools_list_has_five_tools_with_the_job_tools(tmp_path: Path):
+def test_tools_list_has_the_job_tools(tmp_path: Path):
+    # Phase 8 had five tools; the exact list is pinned by test_tools_list_is_exactly_the_tools_of_this_version
     async def main():
         async with connect(write_home(tmp_path)) as session:
             names = [t.name for t in (await session.list_tools()).tools]
-            assert len(names) == 5 and {"startJob", "waitJob"} <= set(names)
+            assert {"startJob", "waitJob"} <= set(names)
 
     anyio.run(main)
 

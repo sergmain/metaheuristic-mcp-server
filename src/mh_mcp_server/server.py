@@ -23,7 +23,7 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mh_mcp_server import execution, jobs, transcript
+from mh_mcp_server import execution, files, jobs, transcript
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
@@ -32,6 +32,13 @@ log = logging.getLogger("mh_mcp_server")
 
 TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
 TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
+TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
+
+
+class Edit(pydantic.BaseModel):
+    old: str
+    new: str
+    count: int = 1
 
 
 def build_server(rt: Runtime) -> FastMCP:
@@ -73,6 +80,32 @@ def build_server(rt: Runtime) -> FastMCP:
         maxSeconds pass. Returns its state, exitCode when done, and the lines after sinceLine (the tail kept within
         maxLines); pass the returned nextLine back as sinceLine so no line is returned twice."""
         return await jobs.wait_job(rt, sessionId, jobId, maxSeconds, sinceLine, untilRegex, maxLines)
+
+    @mcp.tool(name="readFile", structured_output=False)
+    async def read_file(sessionId: str, path: str, fromLine: int = 1, toLine: int | None = None,
+                        maxLines: int | None = None) -> Reply:
+        """Reads a text file as `N: <line>` lines. totalLines is always the file's real line count; fromLine < 0
+        means the last |fromLine| lines. A read stops at the configured line/byte budget on a line boundary and
+        returns nextFromLine - continue from it; nothing in the middle is ever skipped. A relative path is relative
+        to the session's working directory."""
+        return await anyio.to_thread.run_sync(files.read_file, rt, sessionId, path, fromLine, toLine, maxLines)
+
+    @mcp.tool(name="writeFile", structured_output=False)
+    async def write_file(sessionId: str, path: str, content: str, mode: str = "create",
+                         lineEnding: str | None = None) -> Reply:
+        """Writes a whole file, UTF-8. mode "create" refuses an existing file, "overwrite" replaces it. content's
+        CRLF is normalized to LF, then written with lineEnding ("lf" / "crlf"; default: the existing file's ending,
+        or lf for a new file). A BOM is kept when the file had one. Parent directories are created."""
+        return await anyio.to_thread.run_sync(files.write_file, rt, sessionId, path, content, mode, lineEnding)
+
+    @mcp.tool(name="editFile", structured_output=False)
+    async def edit_file(sessionId: str, path: str, edits: list[Edit], dryRun: bool = False) -> Reply:
+        """Exact replacements, applied in order; each `old` must occur exactly `count` times (default 1) in the text
+        the previous edit left, or nothing is written. old/new are written with LF; on a CRLF file they are
+        converted to CRLF. Line endings and every byte outside the replaced text are kept; a file with mixed line
+        endings is refused. Returns per edit the 1-based line where its first replacement starts."""
+        return await anyio.to_thread.run_sync(files.edit_file, rt, sessionId, path,
+                                              [e.model_dump() for e in edits], dryRun)
 
     install_call_handler(mcp, rt)
     return mcp
