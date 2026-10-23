@@ -42,6 +42,9 @@ PYTHONUTF8 = "1"
 
 [secrets]
 names = []
+
+[excluded]
+paths = []
 """
 
 # table -> key -> kind. A table or key absent here is unknown, and unknown is an error: a misspelt key must never
@@ -54,6 +57,7 @@ _SCHEMA: dict[str, dict[str, str]] = {
     "paths": {"writeRoots": "str_list", "readRoots": "str_list"},
     "path": {"prepend": "str_list"},
     "secrets": {"names": "str_list"},
+    "excluded": {"paths": "str_list"},
 }
 # Tables whose keys are free (environment-variable names); their values must be strings.
 _FREE_TABLES = frozenset({"env"})
@@ -77,6 +81,7 @@ class Config:
     env: Mapping[str, str]
     path_prepend: tuple[str, ...]
     secret_names: frozenset[str]
+    excluded_paths: tuple[str, ...]   # starts of absolute paths the file tools refuse
 
 
 class ConfigError(Exception):
@@ -136,6 +141,21 @@ def is_under(path: Path, roots: Sequence[Path]) -> bool:
         if parts[:len(root_parts)] == root_parts:
             return True
     return False
+
+
+def excluded_by(path: Path, excluded: Sequence[str]) -> str | None:
+    """The first item of `excluded` that is a start of `path`, else None - a plain string prefix, ignoring case and
+    treating / and \\ alike (so `C:\\Windows` also covers `C:\\WindowsApps`; an item ending in a separator covers one
+    directory only)."""
+    text = _separators_and_case(str(path))
+    for item in excluded:
+        if item and text.startswith(_separators_and_case(item)):
+            return item
+    return None
+
+
+def _separators_and_case(text: str) -> str:
+    return text.replace("/", "\\").casefold()
 
 
 def _resolved_parts(path: Path) -> tuple[str, ...]:
@@ -200,4 +220,5 @@ def _to_config(m: Mapping[str, Any]) -> Config:
         env=types.MappingProxyType(dict(m["env"])),
         path_prepend=tuple(m["path"]["prepend"]),
         secret_names=frozenset(m["secrets"]["names"]),
+        excluded_paths=tuple(m["excluded"]["paths"]),
     )

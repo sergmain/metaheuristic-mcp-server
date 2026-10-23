@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from mh_mcp_server.config import is_under
+from mh_mcp_server.config import excluded_by, is_under
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.output import decode_line
 from mh_mcp_server.session_id import is_valid_session_id
@@ -278,6 +278,9 @@ def _target(rt: Runtime, session_id: str, path: str, roots: Sequence[Path]) -> P
         return refusal("BAD_SESSION_ID")
     state = load_state(rt.home, session_id, rt.config.default_cwd)
     target = (state.cwd / path).resolve()
+    excluded = excluded_by(target, rt.config.excluded_paths)
+    if excluded is not None:
+        return refusal("PATH_EXCLUDED", session_id, path=str(target), excluded=excluded)
     if not is_under(target, roots):
         return refusal("PATH_OUTSIDE_ROOTS", session_id, path=str(target))
     return target

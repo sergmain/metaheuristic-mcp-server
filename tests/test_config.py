@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from mh_mcp_server.config import (Config, ConfigError, DEFAULT_CONFIG_TOML, HOME_VARIABLE, is_under, load_config,
-                                  read_text_if_exists, resolve_home)
+from mh_mcp_server.config import (Config, ConfigError, DEFAULT_CONFIG_TOML, HOME_VARIABLE, excluded_by, is_under,
+                                  load_config, read_text_if_exists, resolve_home)
 
 HOME = Path("C:/_mh/mh-mcp-server-test-home")
 
@@ -32,6 +32,7 @@ def test_defaults_when_the_file_is_absent():
     assert dict(c.env) == {"PYTHONUTF8": "1"}
     assert c.path_prepend == ()
     assert c.secret_names == frozenset()
+    assert c.excluded_paths == ()
 
 
 def test_the_default_file_text_loads_to_the_defaults():
@@ -53,6 +54,8 @@ def test_the_default_file_text_loads_to_the_defaults():
     ('[path]\nprepend = ["C:/tools/bin"]', "path_prepend", ("C:/tools/bin",)),
     ('[secrets]\nnames = ["PGPASSWORD", "NRVV_REST_AUTH"]', "secret_names",
      frozenset({"PGPASSWORD", "NRVV_REST_AUTH"})),
+    ('[excluded]\npaths = ["C:\\\\Windows", "C:/sandbox/_work/secret"]', "excluded_paths",
+     ("C:\\Windows", "C:/sandbox/_work/secret")),
 ])
 def test_each_key_overrides_its_default(toml: str, attribute: str, expected):
     assert getattr(load_config(HOME, text_of(toml)), attribute) == expected
@@ -170,6 +173,28 @@ def test_is_under_checks_every_root():
     roots = (Path("C:/sandbox/_work"), Path("C:/_mh/mhbp_home-PostgreSQL-disk-storage"))
     assert is_under(Path("C:/_mh/mhbp_home-PostgreSQL-disk-storage/logs/a.log"), roots)
     assert not is_under(Path("C:/_mh/other"), roots)
+
+
+EXCLUDED = ("C:\\Windows", "c:/sandbox/_work/Secret")
+
+
+def test_excluded_by_matches_the_start_of_a_path_ignoring_case_and_separators():
+    assert excluded_by(Path("C:/Windows/win.ini"), EXCLUDED) == "C:\\Windows"
+    assert excluded_by(Path("c:\\windows"), EXCLUDED) == "C:\\Windows"
+    assert excluded_by(Path("C:/sandbox/_work/secret/a.txt"), EXCLUDED) == "c:/sandbox/_work/Secret"
+
+
+def test_excluded_by_is_a_plain_string_prefix():
+    # C:\Windows covers C:\WindowsApps too; an item ending in a separator covers one directory only
+    assert excluded_by(Path("C:/WindowsApps/x"), EXCLUDED) == "C:\\Windows"
+    assert excluded_by(Path("C:/WindowsApps/x"), ("C:\\Windows\\",)) is None
+    assert excluded_by(Path("C:/Windows/x"), ("C:\\Windows\\",)) == "C:\\Windows\\"
+
+
+def test_excluded_by_is_none_outside_every_item_and_for_no_items():
+    assert excluded_by(Path("C:/sandbox/_work/temp/a.txt"), EXCLUDED) is None
+    assert excluded_by(Path("C:/Windows"), ()) is None
+    assert excluded_by(Path("C:/Windows"), ("",)) is None
 
 
 def test_config_is_immutable():

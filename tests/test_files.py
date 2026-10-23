@@ -232,3 +232,21 @@ def test_write_refusals(tmp_path: Path):
     assert write_file(rt, SID, "C:/Windows/x.txt", "x").header["error"] == "PATH_OUTSIDE_ROOTS"
     assert write_file(rt, SID, str(tmp_path / "x.txt"), "x", mode="append").header["error"] == "BAD_ARGUMENTS"
     assert write_file(rt, SID, str(tmp_path), "x", mode="overwrite").header["error"] == "WRITE_FAILED"
+
+
+# ==================== [excluded] paths ====================
+
+def test_the_file_tools_refuse_an_excluded_path_inside_the_roots(tmp_path: Path):
+    secret = tmp_path / "Secret"
+    secret.mkdir()
+    (secret / "a.txt").write_bytes(b"keep\n")
+    item = str(secret).replace("\\", "/").lower()   # another case and other separators than the target's
+    rt = runtime(tmp_path, f'[excluded]\npaths = ["{item}"]\n')
+    expected = {"error": "PATH_EXCLUDED", "path": str(secret / "a.txt"), "excluded": item}
+    assert read_file(rt, SID, str(secret / "a.txt")).header == expected
+    assert edit_file(rt, SID, str(secret / "a.txt"), [{"old": "keep", "new": "x"}]).header == expected
+    assert write_file(rt, SID, str(secret / "a.txt"), "x", mode="overwrite").header == expected
+    assert write_file(rt, SID, "Secret/new.txt", "x").header["error"] == "PATH_EXCLUDED"   # relative path too
+    assert (secret / "a.txt").read_bytes() == b"keep\n" and not (secret / "new.txt").exists()
+    (tmp_path / "open.txt").write_bytes(b"o\n")
+    assert read_file(rt, SID, str(tmp_path / "open.txt")).text == "1: o"
