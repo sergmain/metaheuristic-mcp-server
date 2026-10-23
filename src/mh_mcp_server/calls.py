@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Literal, Sequence
+from typing import Callable, Literal, Mapping, Sequence
 
 RUNS_DIR = "runs"
 SUPERVISOR = Path(__file__).resolve().parent / "supervisor.py"
@@ -40,10 +40,12 @@ def allocate_call(runs_dir: Path) -> tuple[str, Path]:
         return call_id, call_dir
 
 
-def write_call(call_dir: Path, argv: Sequence[str], cwd: Path, created_at: datetime) -> None:
-    """`call.json` - argv, cwd and the creation time; never the environment (decision 12)."""
+def write_call(call_dir: Path, argv: Sequence[str], cwd: Path, created_at: datetime,
+               extra: Mapping[str, object] | None = None) -> None:
+    """`call.json` - argv, cwd, the creation time and `extra` (kind, name); never the environment (decision 12)."""
     _write_json_atomic(call_dir / "call.json",
-                       {"argv": list(argv), "cwd": str(cwd), "createdAt": created_at.isoformat(timespec="milliseconds")})
+                       {"argv": list(argv), "cwd": str(cwd), "createdAt": created_at.isoformat(timespec="milliseconds"),
+                        **(extra or {})})
 
 
 def supervisor_argv(call_dir: Path) -> list[str]:

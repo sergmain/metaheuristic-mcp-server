@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# byte-exact test fixtures (CRLF, LF, mixed, BOM): never converted
+tests/fixtures/** -text

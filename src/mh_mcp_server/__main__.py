@@ -1,8 +1,46 @@
-"""Entry point: `python -m mh_mcp_server [--version]`."""
+"""Entry point: `python -m mh_mcp_server` runs the stdio MCP server; `--version` prints the version.
 
+stdout is the JSON-RPC channel (decision 15): nothing but the SDK writes to it. Diagnostics go to stderr and to
+`%MH_MCP_SERVER_HOME%/logs/server.log`.
+"""
+
+import logging
+import logging.handlers
+import os
 import sys
+from pathlib import Path
 
 from mh_mcp_server import __version__
+
+
+def _registry_value(hive: str):
+    def read(name: str) -> str | None:
+        from mh_mcp_server.environment import read_registry_env
+        try:
+            values = read_registry_env(hive)  # type: ignore[arg-type]
+        except OSError:
+            return None
+        for key, value in values.items():
+            if key.casefold() == name.casefold():
+                return value
+        return None
+    return read
+
+
+def setup_logging(home: Path) -> None:
+    logs = home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s [pid %(process)d] %(message)s")
+    file_handler = logging.handlers.RotatingFileHandler(logs / "server.log", maxBytes=5 * 1024 * 1024,
+                                                        backupCount=4, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    root.addHandler(file_handler)
+    root.addHandler(stderr_handler)
+    logging.getLogger("mh_mcp_server").setLevel(logging.INFO)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -10,8 +48,28 @@ def main(argv: list[str] | None = None) -> int:
     if args == ["--version"]:
         print(__version__)
         return 0
-    print("server not built yet", file=sys.stderr)
-    return 2
+    if args:
+        print("usage: python -m mh_mcp_server [--version]", file=sys.stderr)
+        return 2
+
+    from mh_mcp_server.config import HOME_VARIABLE, ConfigError, load_config, read_text_if_exists, resolve_home
+    home = resolve_home(os.environ, _registry_value("user"), _registry_value("machine"))
+    if home is None:
+        print(f"mh-mcp-server: {HOME_VARIABLE} is not set (process environment, HKCU\\Environment, machine)",
+              file=sys.stderr)
+        return 2
+    try:
+        config = load_config(home, read_text_if_exists)
+    except ConfigError as e:
+        print(f"mh-mcp-server: {e}", file=sys.stderr)
+        return 2
+    setup_logging(home)
+
+    from mh_mcp_server.execution import production_runtime
+    from mh_mcp_server.server import build_server
+    logging.getLogger("mh_mcp_server").info("starting %s, home %s", __version__, home)
+    build_server(production_runtime(home, config)).run(transport="stdio")
+    return 0
 
 
 if __name__ == "__main__":

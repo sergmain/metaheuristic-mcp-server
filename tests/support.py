@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Mapping
@@ -64,3 +66,45 @@ def run_wrapped(home: Path, command: str, cwd: Path, env: Mapping[str, str] | No
     record = wait_exit(call_dir)
     state = json.loads(state_out.read_text(encoding="utf-8")) if state_out.exists() else None
     return record, output_of(call_dir), state, call_dir
+
+
+# ==================== the server through the SDK's own stdio client ====================
+
+SECRET_VALUE = "s3cr3t-value-42"
+
+
+def write_home(tmp_path: Path, extra_toml: str = "") -> Path:
+    """A server home under tmp_path whose defaultCwd is tmp_path, with one [secrets] variable."""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / "config.toml").write_text(
+        "[execution]\n"
+        f'defaultCwd = "{tmp_path.as_posix()}"\n'
+        "[env]\n"
+        'PYTHONUTF8 = "1"\n'
+        f'MCP_TEST_SECRET = "{SECRET_VALUE}"\n'
+        "[secrets]\n"
+        'names = ["MCP_TEST_SECRET"]\n' + extra_toml, encoding="utf-8")
+    return home
+
+
+@asynccontextmanager
+async def connect(home: Path):
+    """A ClientSession to `python -m mh_mcp_server` on `home`, started like Desktop starts it: the SDK's default
+    (reduced) environment plus MH_MCP_SERVER_HOME and PYTHONPATH."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    params = StdioServerParameters(command=sys.executable, args=["-m", "mh_mcp_server"],
+                                   env={"MH_MCP_SERVER_HOME": str(home), "PYTHONPATH": str(SRC)}, cwd=str(REPO))
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
+async def call(session, tool: str, **arguments) -> tuple[dict, str | None, bool]:
+    """(content 0 as JSON, content 1 text or None, isError)."""
+    result = await session.call_tool(tool, arguments)
+    header = json.loads(result.content[0].text)
+    text = result.content[1].text if len(result.content) > 1 else None
+    return header, text, bool(result.isError)
