@@ -104,6 +104,24 @@ def test_read_file_refusals(tmp_path: Path):
     assert read_file(rt, SID, str(tmp_path / "bin.dat")).header["error"] == "BINARY_FILE"
 
 
+def test_read_file_reads_a_log_path_under_the_homes_runs_dir_outside_the_read_roots(tmp_path: Path):
+    # the home lies outside readRoots, as C:/_mh/mh-mcp-server lies outside C:/sandbox/_work in production
+    work = tmp_path / "work"
+    work.mkdir()
+    rt = runtime(tmp_path, f'[paths]\nreadRoots = ["{work.as_posix()}"]\nwriteRoots = ["{work.as_posix()}"]\n')
+    log = rt.home / "runs" / SID / "0001" / "output.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"first\nsecond\n")
+    reply = read_file(rt, SID, str(log))
+    assert "error" not in reply.header, reply.header
+    assert (reply.header["totalLines"], reply.text) == (2, "1: first\n2: second")
+    # read-only: the runs dir is never a write root
+    assert write_file(rt, SID, str(log), "x", mode="overwrite").header["error"] == "PATH_OUTSIDE_ROOTS"
+    assert edit_file(rt, SID, str(log), [{"old": "first", "new": "x"}]).header["error"] == "PATH_OUTSIDE_ROOTS"
+    # the home outside runs/ stays refused
+    assert read_file(rt, SID, str(rt.home / "config.toml")).header["error"] == "PATH_OUTSIDE_ROOTS"
+
+
 def test_a_relative_path_is_relative_to_the_session_cwd(tmp_path: Path):
     (tmp_path / "rel.txt").write_bytes(b"r\n")
     assert read_file(runtime(tmp_path), SID, "rel.txt").text == "1: r"

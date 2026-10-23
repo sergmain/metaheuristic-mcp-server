@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from mh_mcp_server.calls import RUNS_DIR
 from mh_mcp_server.config import excluded_by, is_under
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.output import decode_line
@@ -184,7 +185,9 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 def read_file(rt: Runtime, session_id: str, path: str, from_line: int = 1, to_line: int | None = None,
               max_lines: int | None = None) -> Reply:
-    target = _target(rt, session_id, path, rt.config.read_roots)
+    # the home's runs/ dir is readable too: every logPath this server hands out lies there, and a header that names a
+    # log the caller cannot read is a dead end (the home itself is outside the roots, e.g. C:/_mh/mh-mcp-server)
+    target = _target(rt, session_id, path, (*rt.config.read_roots, rt.home / RUNS_DIR))
     if isinstance(target, Reply):
         return target
     if from_line == 0 or (max_lines is not None and max_lines < 1) or (to_line is not None and to_line < 1):
