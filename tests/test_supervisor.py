@@ -20,21 +20,34 @@ def test_a_script_ending_exit_7_yields_exit_7(tmp_path: Path):
 
 
 def test_a_detached_grandchild_does_not_delay_exit_json(tmp_path: Path):
+    # The grandchildren outlive the script by far more than the 3 s bound; the -NoNewWindow one inherits the
+    # output.log handle. The test waits for them to end, so no handle outlives the test and blocks the next
+    # session's cleanup of --basetemp (nothing is killed).
     script = (
-        "Start-Process -NoNewWindow -FilePath pwsh "
-        "-ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep 20'\n"
-        "Start-Process -WindowStyle Hidden -FilePath pwsh "
-        "-ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep 20'\n"
+        "$a = Start-Process -PassThru -NoNewWindow -FilePath pwsh "
+        "-ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep 8'\n"
+        "$b = Start-Process -PassThru -WindowStyle Hidden -FilePath pwsh "
+        "-ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep 8'\n"
+        "'GPID=' + $a.Id\n"
+        "'GPID=' + $b.Id\n"
         "'END=' + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()\n"
     )
     started = time.monotonic()
     call_dir = start_ps1(tmp_path, script)
-    record = wait_exit(call_dir, seconds=15)
-    assert time.monotonic() - started < 15
-    script_end_ms = int(re.search(r"END=(\d+)", output_of(call_dir)).group(1))
+    record = wait_exit(call_dir, seconds=30)
+    out = output_of(call_dir)
+    grandchildren = [int(pid) for pid in re.findall(r"GPID=(\d+)", out)]
+    assert len(grandchildren) == 2
+    assert all(process_alive(pid, None) for pid in grandchildren)
+    script_end_ms = int(re.search(r"END=(\d+)", out).group(1))
     ended_ms = datetime.fromisoformat(record["endedAt"]).timestamp() * 1000
     assert ended_ms - script_end_ms < 3000
     assert record["exit"] == 0
+    deadline = time.monotonic() + 30
+    while any(process_alive(pid, None) for pid in grandchildren) and time.monotonic() < deadline:
+        time.sleep(0.2)
+    assert not any(process_alive(pid, None) for pid in grandchildren)
+    assert time.monotonic() - started < 30
 
 
 HELPER = r"""
