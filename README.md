@@ -35,6 +35,10 @@ instance's start (`yyyyMMdd-HHmmss-<6 hex>`), so the instances Claude Desktop st
 every line also names the instance's `[pid N]`. A starting instance keeps the newest 20 (its own included) and skips
 one another instance still holds open. The `server.log` of releases before 0.1.7 is left alone.
 
+Since 0.1.8 the instance's file (only the file, not stderr) also gets one line when a `tools/call` arrives and one when
+it ends, with its JSON-RPC request id, tool and sessionId, and one line for each `notifications/cancelled`, which the
+server ignores (python-sdk#2610). A client timeout with no arrival line was never sent to the server.
+
 ## Configuration
 
 `config.toml` in the runtime home, over the built-in defaults (`config.DEFAULT_CONFIG_TOML`); an unknown table or key

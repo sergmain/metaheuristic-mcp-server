@@ -66,6 +66,10 @@ def setup_logging(home: Path) -> None:
     root.addHandler(file_handler)
     root.addHandler(stderr_handler)
     logging.getLogger("mh_mcp_server").setLevel(logging.INFO)
+    calls = logging.getLogger("mh_mcp_server.calls")   # one line per tools/call arrival and end: this file only
+    calls.propagate = False
+    calls.addHandler(file_handler)
+    calls.setLevel(logging.INFO)
 
 
 def main(argv: list[str] | None = None) -> int:

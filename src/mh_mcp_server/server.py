@@ -30,6 +30,21 @@ from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
 
 log = logging.getLogger("mh_mcp_server")
+calls_log = logging.getLogger("mh_mcp_server.calls")   # file only (not stderr): wired by __main__.setup_logging
+
+
+def is_cancellation(message: Any) -> bool:
+    """True for an incoming `notifications/cancelled` (a SessionMessage from the stdio reader)."""
+    root = getattr(getattr(message, "message", None), "root", None)
+    return isinstance(root, types.JSONRPCNotification) and root.method == "notifications/cancelled"
+
+
+def request_id_of(mcp: FastMCP) -> Any:
+    """The JSON-RPC id of the request being handled, for the calls log; None outside a request."""
+    try:
+        return mcp._mcp_server.request_context.request_id
+    except LookupError:
+        return None
 
 TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
 TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
@@ -120,8 +135,11 @@ def install_call_handler(mcp: FastMCP, rt: Runtime) -> None:
         started = time.monotonic()
         name = request.params.name
         arguments: dict[str, Any] = dict(request.params.arguments or {})
+        request_id = request_id_of(mcp)
+        calls_log.info("request %s: %s sessionId=%s arrived", request_id, name, arguments.get("sessionId"))
         reply = await _run_tool(tool_manager, name, arguments)
         seconds = time.monotonic() - started
+        calls_log.info("request %s: %s done in %.2f s", request_id, name, seconds)
         secrets = await anyio.to_thread.run_sync(execution.secret_values, rt)
         header_text = mask(json.dumps(reply.header, ensure_ascii=False), secrets)
         text = mask(reply.text, secrets) if reply.text else None
@@ -148,7 +166,14 @@ async def serve_stdio(mcp: FastMCP) -> None:
     The SDK's loop stops reading at EOF and then waits for every running handler, so a server whose client had died
     lived on until its longest call returned (up to the 58 s wait limit). A call cut short here loses nothing: its
     command runs under its own supervisor and is a job from then on (no delivered.json), and the foreground lock of a
-    server that has exited is stale."""
+    server that has exited is stale.
+
+    `notifications/cancelled` is dropped here, before the SDK sees it (2026-10-24): in mcp 1.12.1 a cancellation that
+    lands while a handler awaits leaks a CancelledError out of RequestResponder.__exit__ and ends the task group around
+    the receive loop, so the instance never answers again (modelcontextprotocol/python-sdk#2610, reproduced by
+    tests/test_cancelled_request.py). Nothing is lost by ignoring it - the spec lets a receiver ignore a request that
+    cannot be cancelled, and none here can: a command is never killed and every call returns within 58 s; the client
+    ignores the late result."""
     server = mcp._mcp_server
     async with stdio_server() as (read_stream, write_stream):
         forward_send, forward_receive = anyio.create_memory_object_stream(0)
@@ -156,6 +181,10 @@ async def serve_stdio(mcp: FastMCP) -> None:
             async def forward() -> None:
                 async with forward_send:
                     async for message in read_stream:
+                        if is_cancellation(message):
+                            params = message.message.root.params or {}
+                            calls_log.info("request %s: notifications/cancelled ignored", params.get("requestId"))
+                            continue
                         await forward_send.send(message)
                 tg.cancel_scope.cancel()
 
