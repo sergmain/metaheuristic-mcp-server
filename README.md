@@ -26,9 +26,14 @@ The link is a junction on Windows and a symbolic link on Linux; the commands are
 
 ## Runtime home
 
-`MH_MCP_SERVER_HOME` names the runtime directory: `config.toml`, `sessions/`, `state/`, `runs/`, `logs/server.log`,
+`MH_MCP_SERVER_HOME` names the runtime directory: `config.toml`, `sessions/`, `state/`, `runs/`, `logs/`,
 and the releases in `dist/<version>/`. Clearing state means `sessions/`, `state/` and `runs/` - never `dist/`, which
 holds the running release. How the variable reaches the server is OS-specific.
+
+`logs/` holds one file per server instance, `server-<sid>.log`, where `<sid>` is minted like a sessionId at the
+instance's start (`yyyyMMdd-HHmmss-<6 hex>`), so the instances Claude Desktop starts side by side never share a file;
+every line also names the instance's `[pid N]`. A starting instance keeps the newest 20 (its own included) and skips
+one another instance still holds open. The `server.log` of releases before 0.1.7 is left alone.
 
 ## Configuration
 

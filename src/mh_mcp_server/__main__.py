@@ -2,15 +2,21 @@
 
 stdout is the JSON-RPC channel (decision 15): nothing but the SDK writes to it. Diagnostics go to stderr and to
 `%MH_MCP_SERVER_HOME%/logs/server.log`.
+
+Since 0.1.7 the log file is per instance - `logs/server-<sid>.log`, `<sid>` minted like a sessionId - so the instances
+Claude Desktop starts side by side never share (or rotate) one file; at start the newest `LOG_FILES_KEPT` are kept.
 """
 
 import logging
 import logging.handlers
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from mh_mcp_server import __version__
+
+LOG_FILES_KEPT = 20
 
 
 def _registry_value(hive: str):
@@ -27,12 +33,31 @@ def _registry_value(hive: str):
     return read
 
 
+def instance_log_name(instance_id: str) -> str:
+    """The log file of one server instance; `instance_id` is minted like a sessionId (`yyyyMMdd-HHmmss-<6 hex>`), so
+    no two instances share a file and name order is start order."""
+    return f"server-{instance_id}.log"
+
+
+def prune_logs(logs: Path, keep: int) -> None:
+    """Removes all but the newest `keep` instance logs; their names start with the start time, so name order is age
+    order. A file another instance still holds open cannot be deleted on Windows and is skipped."""
+    names = sorted(logs.glob("server-*.log"))
+    for old in names[:max(len(names) - keep, 0)]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
 def setup_logging(home: Path) -> None:
     logs = home / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    prune_logs(logs, LOG_FILES_KEPT - 1)   # room for this instance's own file
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s [pid %(process)d] %(message)s")
-    file_handler = logging.handlers.RotatingFileHandler(logs / "server.log", maxBytes=5 * 1024 * 1024,
-                                                        backupCount=4, encoding="utf-8")
+    from mh_mcp_server.session_id import new_session_id, random_hex6
+    file_handler = logging.FileHandler(logs / instance_log_name(new_session_id(datetime.now, random_hex6)),
+                                       encoding="utf-8")
     file_handler.setFormatter(formatter)
     stderr_handler = logging.StreamHandler(sys.stderr)
     stderr_handler.setFormatter(formatter)
