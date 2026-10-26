@@ -24,7 +24,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 
-from mh_mcp_server import execution, files, jobs, transcript
+from mh_mcp_server import execution, files, jobs, memory, transcript
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
@@ -49,6 +49,7 @@ def request_id_of(mcp: FastMCP) -> Any:
 TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
 TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
 TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
+TOOLS_0_1_9 = TOOLS + ("getMemory",)
 
 
 class Edit(pydantic.BaseModel):
@@ -122,6 +123,13 @@ def build_server(rt: Runtime) -> FastMCP:
         endings is refused. Returns per edit the 1-based line where its first replacement starts."""
         return await anyio.to_thread.run_sync(files.edit_file, rt, sessionId, path,
                                               [e.model_dump() for e in edits], dryRun)
+
+    @mcp.tool(name="getMemory", structured_output=False)
+    async def get_memory(sessionId: str) -> Reply:
+        """The box's memory in one in-process call (no pwsh): usedGB, availableGB, totalGB, memoryLoad (percent of
+        physical memory in use), commitUsedGB, commitFreeGB, commitLimitGB - GiB, one decimal. Use it instead of a
+        command querying WMI."""
+        return await anyio.to_thread.run_sync(memory.get_memory, sessionId)
 
     install_call_handler(mcp, rt)
     return mcp

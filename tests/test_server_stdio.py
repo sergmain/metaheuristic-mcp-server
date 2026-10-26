@@ -42,15 +42,32 @@ def test_two_sessions_run_concurrently_on_one_connection(tmp_path: Path):
 
 
 def test_tools_list_is_exactly_the_tools_of_this_version(tmp_path: Path):
-    # Phase 7: three tools; Phase 8 adds startJob and waitJob; Phase 9 readFile, writeFile, editFile
+    # Phase 7: three tools; Phase 8 adds startJob and waitJob; Phase 9 readFile, writeFile, editFile; 0.1.9 getMemory
     async def main():
         async with connect(write_home(tmp_path)) as session:
             tools = await session.list_tools()
-            assert sorted(t.name for t in tools.tools) == ["editFile", "executeCommand", "getSession",
+            assert sorted(t.name for t in tools.tools) == ["editFile", "executeCommand", "getMemory", "getSession",
                                                            "getSessionId", "readFile", "startJob", "waitJob",
                                                            "writeFile"]
 
     anyio.run(main)
+
+
+def test_get_memory_answers_through_the_server_and_lands_in_the_transcript(tmp_path: Path):
+    # 0.1.9: the box's memory without a pwsh process; the call is a transcript block of its session like any other
+    home = write_home(tmp_path)
+
+    async def main():
+        async with connect(home) as session:
+            header, text, is_error = await call(session, "getMemory", sessionId=SID_A)
+            assert not is_error, header
+            assert text is None
+            assert header["totalGB"] > 0 and 0 <= header["usedGB"] <= header["totalGB"], header
+            assert header["commitFreeGB"] <= header["commitLimitGB"], header
+
+    anyio.run(main)
+    block = (home / "sessions" / (SID_A + ".txt")).read_text(encoding="utf-8")
+    assert "getMemory" in block and "usedGB" in block, block
 
 
 def test_the_same_session_issuing_two_concurrent_commands_gets_one_session_busy(tmp_path: Path):

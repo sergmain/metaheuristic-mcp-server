@@ -7,6 +7,11 @@ a detached supervisor that writes the output and the exit code to files under th
 continues as a job, and the server holds no state in memory that a call depends on. Every request and response is
 recorded in a UTF-8 transcript per session.
 
+Since 0.1.9 `getMemory(sessionId)` reports the box's memory from one in-process `GlobalMemoryStatusEx` call - used,
+available and total physical memory, the memory load, and the commit charge (used, free, limit), in GiB - so a chat
+watching memory no longer starts a `pwsh` process to query WMI. Windows only: elsewhere it refuses with
+`MEMORY_UNAVAILABLE`.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 
