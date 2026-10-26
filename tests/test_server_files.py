@@ -7,15 +7,15 @@ from support import REPO, call, connect, write_home
 
 FIXTURES = REPO / "tests" / "fixtures"
 SID = "20261023-181500-0000ee"
-# 0.1.9: getMemory added (was EIGHT, without it)
-NINE = ["editFile", "executeCommand", "getMemory", "getSession", "getSessionId", "readFile", "startJob", "waitJob",
-        "writeFile"]
+# 0.1.9: getMemory added (was EIGHT, without it); 0.1.10: searchFiles, listFiles, fileInfo (was NINE)
+TWELVE = ["editFile", "executeCommand", "fileInfo", "getMemory", "getSession", "getSessionId", "listFiles", "readFile",
+          "searchFiles", "startJob", "waitJob", "writeFile"]
 
 
-def test_tools_list_returns_all_nine_tools(tmp_path: Path):
+def test_tools_list_returns_all_twelve_tools(tmp_path: Path):
     async def main():
         async with connect(write_home(tmp_path)) as session:
-            assert sorted(t.name for t in (await session.list_tools()).tools) == NINE
+            assert sorted(t.name for t in (await session.list_tools()).tools) == TWELVE
 
     anyio.run(main)
 

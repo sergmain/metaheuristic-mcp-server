@@ -12,6 +12,12 @@ available and total physical memory, the memory load, and the commit charge (use
 watching memory no longer starts a `pwsh` process to query WMI. Windows only: elsewhere it refuses with
 `MEMORY_UNAVAILABLE`.
 
+Since 0.1.10 three file tools answer in process what chats most often ran as `pwsh` commands (mh-mcp's own transcripts,
+2026-10-23 - 10-26: 818 greps, 380 directory listings, 162 line / byte counts): `searchFiles` (a regex over a tree or a
+file, `path:line: text`), `listFiles` (a listing, or a find with a glob and `maxDepth`) and `fileInfo` (lines, bytes, line
+ending for up to 50 files). They obey readFile's roots and `[excluded]`, never follow a link or a junction, and skip
+`.git`, `target`, `node_modules`, `__pycache__`, `.idea`, `.venv`, `dist`, `.pytest_cache` unless asked.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 

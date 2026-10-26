@@ -24,7 +24,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 
-from mh_mcp_server import execution, files, jobs, memory, transcript
+from mh_mcp_server import execution, files, finder, jobs, memory, transcript
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
@@ -50,6 +50,7 @@ TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
 TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
 TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
 TOOLS_0_1_9 = TOOLS + ("getMemory",)
+TOOLS_0_1_10 = TOOLS_0_1_9 + ("searchFiles", "listFiles", "fileInfo")
 
 
 class Edit(pydantic.BaseModel):
@@ -130,6 +131,32 @@ def build_server(rt: Runtime) -> FastMCP:
         physical memory in use), commitUsedGB, commitFreeGB, commitLimitGB - GiB, one decimal. Use it instead of a
         command querying WMI."""
         return await anyio.to_thread.run_sync(memory.get_memory, sessionId)
+
+    @mcp.tool(name="searchFiles", structured_output=False)
+    async def search_files(sessionId: str, root: str, regex: str, glob: str | None = None, maxResults: int | None = None,
+                           context: int = 0, ignoreCase: bool = False, includeSkipped: bool = False) -> Reply:
+        """Searches the text files under `root` (a directory, walked recursively, or one file) for a Python regex, in
+        process - no pwsh. Content 1: `path:line: text` per match (path relative to root; context lines `path:line- text`).
+        `glob` filters file names (comma-separated, e.g. "*.java,*.py"); .git, target, node_modules, __pycache__, .idea,
+        .venv, dist, .pytest_cache are skipped unless includeSkipped; binary and > 64 MB files are skipped and counted.
+        Header: matches, files, scanned, truncated when maxResults (default 200) or the byte budget stopped it."""
+        return await anyio.to_thread.run_sync(finder.search_files, rt, sessionId, root, regex, glob, maxResults, context,
+                                              ignoreCase, includeSkipped)
+
+    @mcp.tool(name="listFiles", structured_output=False)
+    async def list_files(sessionId: str, root: str, glob: str | None = None, maxDepth: int = 1,
+                         maxResults: int | None = None, includeSkipped: bool = False) -> Reply:
+        """Lists `root` in process - no pwsh: one line per entry, `d|f  bytes  modified  path` (path relative to root),
+        down to maxDepth (1 = the root's own entries). With `glob` (comma-separated name patterns) only matching files are
+        listed - a recursive find with maxDepth > 1. Skips as searchFiles does. Header: dirs, files, truncated."""
+        return await anyio.to_thread.run_sync(finder.list_files, rt, sessionId, root, glob, maxDepth, maxResults,
+                                              includeSkipped)
+
+    @mcp.tool(name="fileInfo", structured_output=False)
+    async def file_info(sessionId: str, paths: list[str]) -> Reply:
+        """For up to 50 files at once, in process: lines (readFile's count), bytes, lineEnding, bom, binary, modified.
+        A path that is refused or missing gets its error in its own entry; the call itself never fails for one path."""
+        return await anyio.to_thread.run_sync(finder.file_info, rt, sessionId, paths)
 
     install_call_handler(mcp, rt)
     return mcp
