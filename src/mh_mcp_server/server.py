@@ -51,6 +51,7 @@ TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
 TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
 TOOLS_0_1_9 = TOOLS + ("getMemory",)
 TOOLS_0_1_10 = TOOLS_0_1_9 + ("searchFiles", "listFiles", "fileInfo")
+TOOLS_0_1_11 = TOOLS_0_1_10 + ("cancelJob",)
 
 
 class Edit(pydantic.BaseModel):
@@ -157,6 +158,14 @@ def build_server(rt: Runtime) -> FastMCP:
         """For up to 50 files at once, in process: lines (readFile's count), bytes, lineEnding, bom, binary, modified.
         A path that is refused or missing gets its error in its own entry; the call itself never fails for one path."""
         return await anyio.to_thread.run_sync(finder.file_info, rt, sessionId, paths)
+
+    @mcp.tool(name="cancelJob", structured_output=False)
+    async def cancel_job(sessionId: str, jobId: str) -> Reply:
+        """Cancels a running job - or an executeCommand that outlived its wait and became one: kills its pwsh and every
+        process it started (only while that pwsh is still the process the job recorded). The job then ends `done` with
+        the killed shell's exit code; the header and every later waitJob carry `cancelled: true`. A job no longer running
+        is reported as it is, nothing killed. Header: jobId, state, cancelled, killed, exitCode."""
+        return await anyio.to_thread.run_sync(jobs.cancel_job, rt, sessionId, jobId)
 
     install_call_handler(mcp, rt)
     return mcp

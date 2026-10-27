@@ -18,6 +18,11 @@ file, `path:line: text`), `listFiles` (a listing, or a find with a glob and `max
 ending for up to 50 files). They obey readFile's roots and `[excluded]`, never follow a link or a junction, and skip
 `.git`, `target`, `node_modules`, `__pycache__`, `.idea`, `.venv`, `dist`, `.pytest_cache` unless asked.
 
+Since 0.1.11 `cancelJob(sessionId, jobId)` ends a running job: it writes `cancel.json` beside the call, then kills the
+job's pwsh and every process it started (`taskkill /T /F`, only while that pwsh is still the process `pid.json` recorded,
+by its creation time). The supervisor survives and writes `exit.json`, so the job ends `done` and `waitJob` reports
+`cancelled`.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 

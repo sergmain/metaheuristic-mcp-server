@@ -102,3 +102,20 @@ else:
         except PermissionError:
             return True
         return True
+
+
+def kill_tree(pid: int, created: int | None) -> bool:
+    """0.1.11 (cancelJob): kills `pid` and every process it started - only while `pid` is still the process created at
+    `created`, so a reused pid is never touched. Windows: `taskkill /T /F` (the tree by parent pid); POSIX: SIGKILL to the
+    process (its children are not tracked there). True when the kill was issued and succeeded."""
+    if not process_alive(pid, created):
+        return False
+    if os.name == "nt":
+        return subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    import signal
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return False
+    return True

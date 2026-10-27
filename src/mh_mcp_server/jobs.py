@@ -6,6 +6,11 @@ directory and environment, and its own cd and $env: changes are discarded (decis
 `waitJob` returns as soon as the job is done (or lost), a line after `sinceLine` matches `untilRegex`, or
 `maxSeconds` have passed. `nextLine` is the number of lines read so far; passed back as `sinceLine`, two waits never
 return the same line. The returned text is capped keeping the TAIL.
+
+`cancelJob` (0.1.11, the user: "just add a new tool for canceling any jobs - the Processor already does that when wall
+time is over"): kills a running call's pwsh and every process it started, after writing `cancel.json` beside it; the
+supervisor outlives the kill and writes `exit.json` as for any end, so the call ends `done` with the killed shell's exit
+code, and `waitJob` reports `cancelled`.
 """
 
 from __future__ import annotations
@@ -19,13 +24,16 @@ from typing import Any
 import anyio
 import anyio.to_thread
 
-from mh_mcp_server.calls import allocate_call, call_state, read_call, read_exit, runs_dir
+from mh_mcp_server.calls import _write_json_atomic, allocate_call, call_state, read_call, read_exit, read_pids, runs_dir
 from mh_mcp_server.execution import Reply, Runtime, admit_call, refusal, spawn_call
 from mh_mcp_server.output import Line, cap_tail, decode_line
+from mh_mcp_server.processes import kill_tree
 from mh_mcp_server.session_id import is_valid_session_id
 from mh_mcp_server.session_state import load_state
 
 _JOB_ID = re.compile(r"\d{4,}")
+CANCEL_FILE = "cancel.json"
+CANCEL_WAIT_SECONDS = 10
 
 
 def start_job(rt: Runtime, session_id: str, command: str, cwd: str | None = None, name: str | None = None) -> Reply:
@@ -42,6 +50,33 @@ def start_job(rt: Runtime, session_id: str, command: str, cwd: str | None = None
     if notes:
         header["notes"] = notes
     return Reply(header, None, False, call_id, session_id)
+
+
+def cancel_job(rt: Runtime, session_id: str, job_id: str) -> Reply:
+    """Kills running call `job_id` (a job, or an executeCommand promoted to one) with every process it started, and
+    waits up to CANCEL_WAIT_SECONDS for its supervisor to record the end. A call no longer running is reported as it
+    is, with nothing killed."""
+    if not is_valid_session_id(session_id):
+        return refusal("BAD_SESSION_ID")
+    call_dir = runs_dir(rt.home, session_id) / job_id
+    if _JOB_ID.fullmatch(job_id) is None or read_call(call_dir) is None:
+        return refusal("JOB_NOT_FOUND", session_id, jobId=job_id)
+    state = call_state(call_dir, rt.alive)
+    if state != "running":
+        return Reply({"jobId": job_id, "state": state, "cancelled": False}, None, False, None, session_id)
+    pids = read_pids(call_dir)
+    if pids is None:
+        return refusal("BAD_ARGUMENTS", session_id, message="the job is still starting - retry in a moment")
+    _write_json_atomic(call_dir / CANCEL_FILE, {"at": datetime.now().astimezone().isoformat(timespec="milliseconds")})
+    killed = kill_tree(pids["shellPid"], pids.get("shellCreated"))
+    deadline = time.monotonic() + CANCEL_WAIT_SECONDS
+    while (state := call_state(call_dir, rt.alive)) == "running" and time.monotonic() < deadline:
+        time.sleep(0.2)
+    header: dict[str, Any] = {"jobId": job_id, "state": state, "cancelled": True, "killed": killed}
+    exit_record = read_exit(call_dir) if state == "done" else None
+    if exit_record is not None:
+        header["exitCode"] = exit_record.get("exit")
+    return Reply(header, None, False, None, session_id)
 
 
 async def wait_job(rt: Runtime, session_id: str, job_id: str, max_seconds: int | None = None, since_line: int = 0,
@@ -118,6 +153,8 @@ def _reply(rt: Runtime, session_id: str, job_id: str, call_dir: Path, state: str
     kept, omitted = cap_tail(cursor.collected, max_lines, rt.config.max_bytes)
     next_line = max(cursor.count, cursor.since_line)
     header: dict[str, Any] = {"jobId": job_id, "state": state}
+    if (call_dir / CANCEL_FILE).is_file():
+        header["cancelled"] = True
     exit_record = read_exit(call_dir) if state == "done" else None
     if exit_record is not None:
         header["exitCode"] = exit_record.get("exit")
