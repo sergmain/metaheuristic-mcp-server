@@ -50,6 +50,16 @@ names = []
 
 [excluded]
 paths = []
+
+# sqlQuery (0.1.12): psql on stdin as `user`, meant to be a SELECT-only role; the password is the value of the command
+# environment's variable `passwordVariable` (config [env], listed in [secrets] so it is masked)
+[sql]
+psql = "psql"
+host = "localhost"
+port = 5432
+user = "mh_mcp_ro"
+database = "mh"
+passwordVariable = "MH_MCP_SQL_PASSWORD"
 """
 
 # table -> key -> kind. A table or key absent here is unknown, and unknown is an error: a misspelt key must never
@@ -63,6 +73,7 @@ _SCHEMA: dict[str, dict[str, str]] = {
     "path": {"prepend": "str_list"},
     "secrets": {"names": "str_list"},
     "excluded": {"paths": "str_list"},
+    "sql": {"psql": "str", "host": "str", "port": "int", "user": "str", "database": "str", "passwordVariable": "str"},
 }
 # Tables whose keys are free (environment-variable names); their values must be strings.
 _FREE_TABLES = frozenset({"env"})
@@ -87,6 +98,12 @@ class Config:
     path_prepend: tuple[str, ...]
     secret_names: frozenset[str]
     excluded_paths: tuple[str, ...]   # starts of absolute paths the file tools refuse
+    sql_psql: str                     # sqlQuery (0.1.12): the psql executable, found on the command PATH
+    sql_host: str
+    sql_port: int
+    sql_user: str
+    sql_database: str                 # the default database; a call may name another
+    sql_password_variable: str        # the command environment's variable holding the password
 
 
 class ConfigError(Exception):
@@ -245,4 +262,10 @@ def _to_config(m: Mapping[str, Any]) -> Config:
         path_prepend=tuple(m["path"]["prepend"]),
         secret_names=frozenset(m["secrets"]["names"]),
         excluded_paths=tuple(m["excluded"]["paths"]),
+        sql_psql=m["sql"]["psql"],
+        sql_host=m["sql"]["host"],
+        sql_port=m["sql"]["port"],
+        sql_user=m["sql"]["user"],
+        sql_database=m["sql"]["database"],
+        sql_password_variable=m["sql"]["passwordVariable"],
     )

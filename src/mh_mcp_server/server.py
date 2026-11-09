@@ -28,6 +28,8 @@ from mh_mcp_server import execution, files, finder, jobs, memory, transcript
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
+from mh_mcp_server.sql import sql_query as run_sql_query
+from mh_mcp_server.gitcommit import git_commit as run_git_commit
 
 log = logging.getLogger("mh_mcp_server")
 calls_log = logging.getLogger("mh_mcp_server.calls")   # file only (not stderr): wired by __main__.setup_logging
@@ -52,6 +54,7 @@ TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
 TOOLS_0_1_9 = TOOLS + ("getMemory",)
 TOOLS_0_1_10 = TOOLS_0_1_9 + ("searchFiles", "listFiles", "fileInfo")
 TOOLS_0_1_11 = TOOLS_0_1_10 + ("cancelJob",)
+TOOLS_0_1_12 = TOOLS_0_1_11 + ("sqlQuery", "gitCommit")
 
 
 class Edit(pydantic.BaseModel):
@@ -166,6 +169,30 @@ def build_server(rt: Runtime) -> FastMCP:
         the killed shell's exit code; the header and every later waitJob carry `cancelled: true`. A job no longer running
         is reported as it is, nothing killed. Header: jobId, state, cancelled, killed, exitCode."""
         return await anyio.to_thread.run_sync(jobs.cancel_job, rt, sessionId, jobId)
+
+    @mcp.tool(name="sqlQuery", structured_output=False)
+    async def sql_query(sessionId: str, sql: str, database: str | None = None, maxRows: int | None = None,
+                        timeoutSeconds: int | None = None) -> Reply:
+        """Runs SQL on the dev PostgreSQL through psql, read only, no pwsh: the SQL goes to psql on stdin as UTF-8 in
+        psql's restricted mode (no backslash command runs), as config [sql]'s SELECT-only role, with
+        default_transaction_read_only and a statement_timeout before the call's deadline. `database` is a plain name
+        (default: config [sql] database). Content 0: callId, exitCode (psql's: 0 ok, 2 no connection, 3 an SQL error,
+        its text in `stderr`), rows, returned, truncated, timedOut, logPath (the whole result as CSV); content 1: the
+        columns line and the first maxRows (default 200) rows as CSV, NULL shown as <NULL>. One statement per call: a
+        second one's result follows the first's."""
+        return await anyio.to_thread.run_sync(run_sql_query, rt, sessionId, sql, database, maxRows, timeoutSeconds)
+
+    @mcp.tool(name="gitCommit", structured_output=False)
+    async def git_commit(sessionId: str, repo: str, paths: list[str], message: str, push: bool = True,
+                         timeoutSeconds: int | None = None) -> Reply:
+        """Commits exactly `paths` of the git repository at `repo`, then pushes - git run directly, no pwsh, nothing
+        quoted: `git add -- <paths>` (new, modified and deleted files), `git commit -F - -- <paths>` (the message on stdin;
+        another path's staged change stays out of the commit and stays staged), then `git push origin HEAD` unless push
+        is false. A path names one file, or one deleted since HEAD, under the repository's top level - never the
+        repository itself, a directory or a wildcard. Header: repo, branch, commit, files, pushed, exitCode (0 when every
+        step succeeded), step (the step that failed), timedOut; content 1: the commit's name-status and git's push
+        output, or the failed step's output."""
+        return await anyio.to_thread.run_sync(run_git_commit, rt, sessionId, repo, paths, message, push, timeoutSeconds)
 
     install_call_handler(mcp, rt)
     return mcp

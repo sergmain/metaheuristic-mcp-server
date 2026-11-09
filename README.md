@@ -23,6 +23,23 @@ job's pwsh and every process it started (`taskkill /T /F`, only while that pwsh 
 by its creation time). The supervisor survives and writes `exit.json`, so the job ends `done` and `waitJob` reports
 `cancelled`.
 
+Since 0.1.12 two tools replace the chats' most frequent remaining commands that need care rather than speed (mh-mcp's
+transcripts, 2026-10-27 - 11-09: 726 `psql` commands, 353 commits / pushes):
+
+- `sqlQuery(sessionId, sql, database?, maxRows?, timeoutSeconds?)` runs SQL through psql on stdin, as UTF-8 (a `-c`
+  argument loses every character outside the Windows ANSI code page). The first stdin line is `\restrict <key>` with a
+  random key per call, so psql refuses every backslash command (`\!`, `\o`, `\copy`) and the SQL cannot leave the
+  database. It connects as `[sql] user`, a SELECT-only role (`pg_read_all_data`), with `default_transaction_read_only`
+  and a `statement_timeout` before the call's deadline. The role is the guard SQL text cannot lift. The whole result is
+  `output.csv` in the call's directory; the reply shows the first `maxRows` rows as CSV, NULL as `<NULL>`.
+- `gitCommit(sessionId, repo, paths, message, push?, timeoutSeconds?)` commits exactly the named files: `git add --
+  <paths>`, then `git commit -F - -- <paths>`, then `git push origin HEAD`. git runs with argv and the message goes on
+  stdin, so nothing is quoted. Another path's staged change stays out of the commit, and a deleted file commits as a
+  deletion. The repository itself, a directory and a wildcard are refused as paths.
+
+Both run their child process inside the call (`children.py`): stdin is closed at once, and a child still running at
+the deadline is killed and reported `timedOut`.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 
@@ -72,10 +89,19 @@ and `"where": "cwd"` when the directory the command would run in, the given `cwd
 On the command path only a path written out in the text is seen; one built at run time (`$env:windir`, `Join-Path`,
 `cd ..` followed by a name) is not, so this check is a tripwire, not a sandbox - only the file tools' check is complete.
 
+`[sql]` (since 0.1.12) is sqlQuery's connection: `psql` (found on the command PATH), `host`, `port`, `user`, `database`
+(the default; a call may name another) and `passwordVariable`, the name of the command-environment variable that holds
+the password. The password itself goes into `[env]` and its name into `[secrets]`, so it is masked like every secret;
+`[sql]` has no password key. The defaults (`localhost`, `5432`, `mh_mcp_ro`, `mh`, `MH_MCP_SQL_PASSWORD`) fit the dev
+box, so a home normally has no `[sql]` table at all.
+
 ## Tests
 
 `python -m pytest` in the clone - real files, real `pwsh`, real processes, no mocks. The stdio tests start the server
-from the clone, never Desktop.
+from the clone, never Desktop. `tests/test_sql.py` runs against the box's PostgreSQL: it creates a throwaway SELECT-only
+role and table in `postgres` with the superuser password from `PGPASSWORD` (mh-mcp's own `[env]` provides it to a run
+started through mh-mcp), and drops both at the end; without psql or that password those tests are skipped.
+`tests/test_git_commit.py` builds its repositories in `tmp_path`.
 
 ## Windows
 
@@ -126,6 +152,29 @@ them:
 [excluded]
 paths = ["C:\\Windows"]
 ```
+
+sqlQuery's password (since 0.1.12) is one more `[env]` variable, listed in `[secrets]`:
+
+```
+[env]
+MH_MCP_SQL_PASSWORD = "<the password of mh_mcp_ro>"
+
+[secrets]
+names = ["PGPASSWORD", "NRVV_REST_AUTH", "MH_MCP_SQL_PASSWORD"]
+```
+
+The role, created once as the superuser:
+
+```
+create role mh_mcp_ro login password '<password>';
+grant pg_read_all_data to mh_mcp_ro;
+grant pg_use_reserved_connections to mh_mcp_ro;
+alter role mh_mcp_ro set default_transaction_read_only = on;
+```
+
+`pg_use_reserved_connections` matters only once the server's `reserved_connections` is above 0. Without it, the role
+cannot connect while other clients hold every non-superuser slot (`max_connections` minus
+`superuser_reserved_connections`); psql then exits 2 with "remaining connection slots are reserved".
 
 ### Tests
 

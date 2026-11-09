@@ -33,6 +33,8 @@ def test_defaults_when_the_file_is_absent():
     assert c.path_prepend == ()
     assert c.secret_names == frozenset()
     assert c.excluded_paths == ()
+    assert (c.sql_psql, c.sql_host, c.sql_port, c.sql_user, c.sql_database, c.sql_password_variable) == \
+        ("psql", "localhost", 5432, "mh_mcp_ro", "mh", "MH_MCP_SQL_PASSWORD")
 
 
 def test_the_default_file_text_loads_to_the_defaults():
@@ -56,6 +58,12 @@ def test_the_default_file_text_loads_to_the_defaults():
      frozenset({"PGPASSWORD", "NRVV_REST_AUTH"})),
     ('[excluded]\npaths = ["C:\\\\Windows", "C:/sandbox/_work/secret"]', "excluded_paths",
      ("C:\\Windows", "C:/sandbox/_work/secret")),
+    ('[sql]\npsql = "C:/opt/PostgreSQL/18/bin/psql.exe"', "sql_psql", "C:/opt/PostgreSQL/18/bin/psql.exe"),
+    ('[sql]\nhost = "db.local"', "sql_host", "db.local"),
+    ('[sql]\nport = 5433', "sql_port", 5433),
+    ('[sql]\nuser = "reader"', "sql_user", "reader"),
+    ('[sql]\ndatabase = "postgres"', "sql_database", "postgres"),
+    ('[sql]\npasswordVariable = "READER_PW"', "sql_password_variable", "READER_PW"),
 ])
 def test_each_key_overrides_its_default(toml: str, attribute: str, expected):
     assert getattr(load_config(HOME, text_of(toml)), attribute) == expected
@@ -76,6 +84,7 @@ def test_a_key_left_out_keeps_its_default_beside_an_overridden_one():
     ('[shell]\nexecutabel = "pwsh"', "shell.executabel"),
     ('[output]\nmaxline = 10', "output.maxline"),
     ('[shel]\nexecutable = "pwsh"', "shel"),
+    ('[sql]\npassword = "pw"', "sql.password"),
     ('rootKey = 1', "rootKey"),
 ])
 def test_an_unknown_table_or_key_raises_naming_it(toml: str, named: str):
@@ -91,6 +100,7 @@ def test_an_unknown_table_or_key_raises_naming_it(toml: str, named: str):
     ('[shell]\nargs = "-File"', "shell.args"),
     ('[paths]\nwriteRoots = ["C:/a", 1]', "paths.writeRoots"),
     ('[env]\nX = 1', "env.X"),
+    ('[sql]\nport = "5432"', "sql.port"),
 ])
 def test_a_wrong_type_raises_naming_the_key(toml: str, named: str):
     with pytest.raises(ConfigError) as e:
