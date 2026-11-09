@@ -1,8 +1,10 @@
 """sqlQuery (0.1.12) against the box's real PostgreSQL - no mock of psql or of the server.
 
 Each run makes a throwaway SELECT-only role (pg_read_all_data) and a two-row table in the `postgres` database, and drops
-both at the end, as the superuser whose password the test process has from mh-mcp's own [env] (PGPASSWORD). Without psql
-or that password the database tests are skipped; the pure parts and the refusals run anywhere.
+both at the end, as the superuser whose password the test process has from mh-mcp's own [env] (PGPASSWORD). The role may
+use the reserved connection slots (pg_use_reserved_connections), like mh_mcp_ro, so it connects while MH's pool holds
+every ordinary slot. Without psql or that password the database tests are skipped; the pure parts and the refusals run
+anywhere.
 """
 
 import os
@@ -38,6 +40,7 @@ def reader():
     suffix = secrets.token_hex(4)
     role, table, password = f"mh_mcp_test_ro_{suffix}", f"mh_mcp_test_t_{suffix}", secrets.token_hex(16)
     superuser(f"create role {role} login password '{password}'; grant pg_read_all_data to {role}; "
+              f"grant pg_use_reserved_connections to {role}; "
               f"create table public.{table} (v int); insert into public.{table} values (1), (2);")
     try:
         yield role, table, password

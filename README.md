@@ -99,8 +99,9 @@ box, so a home normally has no `[sql]` table at all.
 
 `python -m pytest` in the clone - real files, real `pwsh`, real processes, no mocks. The stdio tests start the server
 from the clone, never Desktop. `tests/test_sql.py` runs against the box's PostgreSQL: it creates a throwaway SELECT-only
-role and table in `postgres` with the superuser password from `PGPASSWORD` (mh-mcp's own `[env]` provides it to a run
-started through mh-mcp), and drops both at the end; without psql or that password those tests are skipped.
+role (allowed the reserved slots, like `mh_mcp_ro`) and table in `postgres` with the superuser password from `PGPASSWORD`
+(mh-mcp's own `[env]` provides it to a run started through mh-mcp), and drops both at the end; without psql or that
+password those tests are skipped.
 `tests/test_git_commit.py` builds its repositories in `tmp_path`.
 
 ## Windows
@@ -175,6 +176,18 @@ alter role mh_mcp_ro set default_transaction_read_only = on;
 `pg_use_reserved_connections` matters only once the server's `reserved_connections` is above 0. Without it, the role
 cannot connect while other clients hold every non-superuser slot (`max_connections` minus
 `superuser_reserved_connections`); psql then exits 2 with "remaining connection slots are reserved".
+
+The dev box reserves 3 slots for it (2026-11-09: MH's pool held 97 of 100, every slot a non-superuser could take):
+
+```
+ALTER SYSTEM SET max_connections = 103;
+ALTER SYSTEM SET reserved_connections = 3;
+-- both are postmaster settings: they take effect at the next restart of the service (elevated)
+Restart-Service postgresql-x64-18
+```
+
+Ordinary roles keep 103 - 3 - 3 = 97 slots, as before, so MH's pool is unchanged; `mh_mcp_ro` (and the tests' throwaway
+role) may use 3 more of its own; superusers keep their 3.
 
 ### Tests
 
