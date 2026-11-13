@@ -159,15 +159,19 @@ def build_server(rt: Runtime) -> FastMCP:
         return await anyio.to_thread.run_sync(memory.get_memory, sessionId)
 
     @mcp.tool(name="searchFiles", structured_output=False)
-    async def search_files(sessionId: str, root: str, regex: str, glob: str | None = None, maxResults: int | None = None,
-                           context: int = 0, ignoreCase: bool = False, includeSkipped: bool = False) -> Reply:
-        """Searches the text files under `root` (a directory, walked recursively, or one file) for a Python regex, in
-        process - no pwsh. Content 1: `path:line: text` per match (path relative to root; context lines `path:line- text`).
-        `glob` filters file names (comma-separated, e.g. "*.java,*.py"); .git, target, node_modules, __pycache__, .idea,
-        .venv, dist, .pytest_cache are skipped unless includeSkipped; binary and > 64 MB files are skipped and counted.
-        Header: matches, files, scanned, truncated when maxResults (default 200) or the byte budget stopped it."""
-        return await anyio.to_thread.run_sync(finder.search_files, rt, sessionId, root, regex, glob, maxResults, context,
-                                              ignoreCase, includeSkipped)
+    async def search_files(sessionId: str, roots: list[str], regex: str, glob: str | None = None,
+                           outputMode: str = "lines", maxResults: int | None = None, context: int = 0,
+                           ignoreCase: bool = False, includeSkipped: bool = False) -> Reply:
+        """Searches the text files under 1-20 `roots` (each a directory, walked recursively, or one file) for a Python
+        regex, in process - no pwsh. Paths are relative to `base`, the deepest directory common to all roots; a file
+        reached through two roots is searched once. outputMode "lines" (default): `path:line: text` per match (context
+        lines `path:line- text`); "files": one path per file with a match; "count": `path: N` per file with matches -
+        maxResults counts files in both, and context needs "lines". `glob` filters file names (comma-separated, e.g.
+        "*.java,*.py"); .git, target, node_modules, __pycache__, .idea, .venv, dist, .pytest_cache are skipped unless
+        includeSkipped; binary and > 64 MB files are skipped and counted. A refused root refuses the call. Header: base,
+        matches, files, scanned, truncated when maxResults (default 200) or the byte budget stopped it."""
+        return await anyio.to_thread.run_sync(finder.search_files, rt, sessionId, roots, regex, glob, outputMode,
+                                              maxResults, context, ignoreCase, includeSkipped)
 
     @mcp.tool(name="listFiles", structured_output=False)
     async def list_files(sessionId: str, root: str, glob: str | None = None, maxDepth: int = 1,

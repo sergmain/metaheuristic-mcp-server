@@ -2,12 +2,13 @@
 
 from pathlib import Path
 
+import anyio
 import pytest
 
 from mh_mcp_server.config import load_config, read_text_if_exists
 from mh_mcp_server.execution import production_runtime
-from mh_mcp_server.finder import file_info, globs_of, list_files, search_files
-from support import write_home
+from mh_mcp_server.finder import common_base, file_info, globs_of, list_files, search_files
+from support import call, connect, write_home
 
 SID = "20261026-170000-00010a"
 
@@ -33,7 +34,7 @@ def tree(tmp_path: Path) -> Path:
 # ==================== searchFiles ====================
 
 def test_search_finds_every_match_by_relative_path_and_skips_build_dirs_and_binaries(tmp_path: Path):
-    reply = search_files(runtime(tmp_path), SID, str(tree(tmp_path)), r"\bf\b")
+    reply = search_files(runtime(tmp_path), SID, [str(tree(tmp_path))], r"\bf\b")
 
     assert reply.text.splitlines() == ["a/x.py:1: def f():", "a/b/y.java:2: int f;"]
     assert (reply.header["matches"], reply.header["files"], reply.header["scanned"], reply.header["skippedBinary"]) == (2, 2, 2, 1)
@@ -41,17 +42,17 @@ def test_search_finds_every_match_by_relative_path_and_skips_build_dirs_and_bina
 
 
 def test_search_glob_case_context_and_included_skipped_dirs(tmp_path: Path):
-    rt, root = runtime(tmp_path), tree(tmp_path)
+    rt, root = runtime(tmp_path), [str(tree(tmp_path))]
 
-    assert search_files(rt, SID, str(root), r"\bf\b", glob="*.java").text == "a/b/y.java:2: int f;"
-    assert search_files(rt, SID, str(root), "CLASS", ignore_case=True).text == "a/b/y.java:1: class Y {}"
-    assert search_files(rt, SID, str(root), "def f", glob="x.py", context=1).text.splitlines() == \
+    assert search_files(rt, SID, root, r"\bf\b", glob="*.java").text == "a/b/y.java:2: int f;"
+    assert search_files(rt, SID, root, "CLASS", ignore_case=True).text == "a/b/y.java:1: class Y {}"
+    assert search_files(rt, SID, root, "def f", glob="x.py", context=1).text.splitlines() == \
         ["a/x.py:1: def f():", "a/x.py:2-     return 1"]
-    assert "target/z.py:1: def f(): pass" in search_files(rt, SID, str(root), "def f", include_skipped=True).text.splitlines()
+    assert "target/z.py:1: def f(): pass" in search_files(rt, SID, root, "def f", include_skipped=True).text.splitlines()
 
 
 def test_search_stops_at_max_results_and_says_so(tmp_path: Path):
-    reply = search_files(runtime(tmp_path), SID, str(tree(tmp_path)), r"\bf\b", max_results=1)
+    reply = search_files(runtime(tmp_path), SID, [str(tree(tmp_path))], r"\bf\b", max_results=1)
 
     assert reply.text == "a/x.py:1: def f():"
     assert reply.header["truncated"] is True
@@ -59,26 +60,116 @@ def test_search_stops_at_max_results_and_says_so(tmp_path: Path):
 
 def test_search_one_file_as_its_root(tmp_path: Path):
     root = tree(tmp_path)
-    assert search_files(runtime(tmp_path), SID, str(root / "a" / "x.py"), "return").text == "x.py:2:     return 1"
+    assert search_files(runtime(tmp_path), SID, [str(root / "a" / "x.py")], "return").text == "x.py:2:     return 1"
 
 
 @pytest.mark.parametrize("args, kind", [
     ({"regex": "("}, "BAD_ARGUMENTS"),
     ({"regex": "f", "max_results": 0}, "BAD_ARGUMENTS"),
     ({"regex": "f", "context": 11}, "BAD_ARGUMENTS"),
+    ({"regex": "f", "output_mode": "paths"}, "BAD_ARGUMENTS"),
+    ({"regex": "f", "output_mode": "files", "context": 1}, "BAD_ARGUMENTS"),
+    ({"regex": "f", "output_mode": "count", "context": 1}, "BAD_ARGUMENTS"),
 ])
 def test_search_refuses_bad_arguments(tmp_path: Path, args, kind):
-    reply = search_files(runtime(tmp_path), SID, str(tree(tmp_path)), **args)
+    reply = search_files(runtime(tmp_path), SID, [str(tree(tmp_path))], **args)
     assert reply.is_error and reply.header["error"] == kind
 
 
 def test_search_refuses_a_root_outside_the_roots_or_missing(tmp_path: Path):
     rt = runtime(tmp_path)
-    outside = search_files(rt, SID, str(Path(tmp_path.anchor) / "no-such-root-mh-mcp"), "f")
+    outside = search_files(rt, SID, [str(Path(tmp_path.anchor) / "no-such-root-mh-mcp")], "f")
     assert outside.is_error and outside.header["error"] == "PATH_OUTSIDE_ROOTS"
-    missing = search_files(rt, SID, str(tmp_path / "missing"), "f")
+    missing = search_files(rt, SID, [str(tmp_path / "missing")], "f")
     assert missing.is_error and missing.header["error"] == "NOT_FOUND"
-    assert search_files(rt, "bad", str(tmp_path), "f").header == {"error": "BAD_SESSION_ID"}
+    assert search_files(rt, "bad", [str(tmp_path)], "f").header == {"error": "BAD_SESSION_ID"}
+
+
+# ==================== searchFiles over several roots, files and count modes (0.1.13, plan 056 Phase 3) ====================
+
+def hits_tree(tmp_path: Path) -> Path:
+    root = tmp_path / "hits"
+    root.mkdir()
+    (root / "a.txt").write_text("hit\nhit\nmiss\n", encoding="utf-8", newline="\n")
+    (root / "b.txt").write_text("hit\n", encoding="utf-8", newline="\n")
+    (root / "c.txt").write_text("miss\n", encoding="utf-8", newline="\n")
+    return root
+
+
+def test_search_two_roots_in_different_trees_print_paths_from_one_base(tmp_path: Path):
+    for name, body in (("one", "f\n"), ("two", "f\nf\n")):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "f.py").write_text(body, encoding="utf-8", newline="\n")
+
+    reply = search_files(runtime(tmp_path), SID, [str(tmp_path / "one"), str(tmp_path / "two")], r"^f$")
+
+    assert reply.text.splitlines() == ["one/f.py:1: f", "two/f.py:1: f", "two/f.py:2: f"]
+    assert Path(reply.header["base"]).resolve() == tmp_path.resolve()
+    assert (reply.header["matches"], reply.header["files"], reply.header["scanned"]) == (3, 2, 2)
+
+
+def test_search_overlapping_roots_search_each_file_once(tmp_path: Path):
+    rt, root = runtime(tmp_path), tree(tmp_path)
+    one = search_files(rt, SID, [str(root)], r"\bf\b")
+
+    both = search_files(rt, SID, [str(root), str(root / "a"), str(root / "a" / "x.py")], r"\bf\b")
+
+    assert both.text == one.text
+    assert (both.header["matches"], both.header["files"], both.header["scanned"]) == (2, 2, 2)
+    assert both.header["base"] == one.header["base"]
+
+
+def test_search_files_mode_lists_each_matching_file_once(tmp_path: Path):
+    reply = search_files(runtime(tmp_path), SID, [str(hits_tree(tmp_path))], "^hit$", output_mode="files")
+
+    assert reply.text == "a.txt\nb.txt"
+    assert (reply.header["matches"], reply.header["files"], reply.header["scanned"]) == (3, 2, 3)
+    assert "truncated" not in reply.header
+
+
+def test_search_count_mode_gives_each_files_number_of_matching_lines(tmp_path: Path):
+    reply = search_files(runtime(tmp_path), SID, [str(hits_tree(tmp_path))], "^hit$", output_mode="count")
+
+    assert reply.text == "a.txt: 2\nb.txt: 1"
+    assert (reply.header["matches"], reply.header["files"]) == (3, 2)
+
+
+def test_search_max_results_counts_files_in_files_and_count_modes(tmp_path: Path):
+    rt, root = runtime(tmp_path), [str(hits_tree(tmp_path))]
+    for mode, expected in (("files", "a.txt"), ("count", "a.txt: 2")):
+        reply = search_files(rt, SID, root, "^hit$", output_mode=mode, max_results=1)
+        assert reply.text == expected, mode
+        assert reply.header["truncated"] is True and reply.header["files"] == 1, mode
+    assert search_files(rt, SID, root, "^hit$", output_mode="files", max_results=2).header.get("truncated") is None
+
+
+def test_search_refuses_no_roots_too_many_and_any_refused_root(tmp_path: Path):
+    rt, root = runtime(tmp_path), str(tree(tmp_path))
+    assert search_files(rt, SID, [], "f").header["error"] == "BAD_ARGUMENTS"
+    assert search_files(rt, SID, [root] * 21, "f").header["error"] == "BAD_ARGUMENTS"
+    refused = search_files(rt, SID, [root, str(tmp_path / "missing")], "f")
+    assert refused.is_error and refused.header["error"] == "NOT_FOUND"
+
+
+def test_common_base():
+    assert common_base([Path("C:/w/a/b"), Path("C:/w/a/c")]) == Path("C:/w/a")
+    assert common_base([Path("C:/w/a")]) == Path("C:/w/a")
+    assert common_base([Path("C:/w"), Path("D:/w")]) is None
+
+
+def test_search_files_tool_takes_roots_and_output_mode_through_the_server(tmp_path: Path):
+    root = hits_tree(tmp_path)
+
+    async def main():
+        async with connect(write_home(tmp_path)) as session:
+            header, text, is_error = await call(session, "searchFiles", sessionId=SID, roots=[str(root)], regex="^hit$",
+                                                outputMode="count")
+            assert not is_error, header
+            assert text == "a.txt: 2\nb.txt: 1" and Path(header["base"]).resolve() == root.resolve()
+            header, _, is_error = await call(session, "searchFiles", sessionId=SID, root=str(root), regex="x")
+            assert is_error and header["error"] == "BAD_ARGUMENTS", header
+
+    anyio.run(main)
 
 
 # ==================== listFiles ====================

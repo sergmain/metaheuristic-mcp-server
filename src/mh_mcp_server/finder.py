@@ -8,6 +8,11 @@ Every path obeys readFile's rules: the session's cwd resolves a relative root, t
 home's runs/ dir, an [excluded] root is refused and an [excluded] entry under the root is skipped. A walk never follows a
 symbolic link or a junction, and skips SKIP_DIRS unless includeSkipped. Output is bounded: maxResults entries and the
 readFile byte budget, `truncated` in the header when either stopped it.
+
+searchFiles over several roots (0.1.13, plan 056 Phase 3): 1 - SEARCH_ROOTS_MAX roots in one call, each resolved and
+refused as a single root is; paths are printed relative to `base`, the deepest directory common to all roots, and a file
+reached through two roots is searched once. outputMode "files" lists each matching file once and "count" gives its
+number of matching lines - for a question whose answer is a list of files or a count, not every matching line.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from mh_mcp_server.calls import RUNS_DIR
 from mh_mcp_server.config import excluded_by
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.files import BINARY_PROBE, _target, file_stats
+from mh_mcp_server.session_id import is_valid_session_id
 
 SKIP_DIRS = frozenset({".git", "target", "node_modules", "__pycache__", ".idea", ".venv", "dist", ".pytest_cache"})
 SEARCH_RESULTS_DEFAULT = 200
@@ -33,6 +39,8 @@ SEARCH_DEPTH = 64
 LINE_CHARS = 300
 LARGE_FILE_BYTES = 64 << 20
 INFO_PATHS_MAX = 50
+SEARCH_ROOTS_MAX = 20
+OUTPUT_MODES = ("lines", "files", "count")
 
 
 # ==================== pure ====================
@@ -58,6 +66,14 @@ def clip(text: str) -> str:
 
 def stamp(seconds: float) -> str:
     return datetime.fromtimestamp(seconds).strftime("%Y-%m-%d %H:%M")
+
+
+def common_base(dirs: Sequence[Path]) -> Path | None:
+    """The deepest directory common to `dirs`; None when there is none (roots on different drives)."""
+    try:
+        return Path(os.path.commonpath([str(d) for d in dirs]))
+    except ValueError:
+        return None
 
 
 # ==================== the walk ====================
@@ -99,25 +115,36 @@ def _limit(max_results: int | None, default: int) -> int | None:
 
 # ==================== searchFiles ====================
 
-def search_files(rt: Runtime, session_id: str, root: str, regex: str, glob: str | None = None,
-                 max_results: int | None = None, context: int = 0, ignore_case: bool = False,
-                 include_skipped: bool = False) -> Reply:
+def search_files(rt: Runtime, session_id: str, roots: Sequence[str], regex: str, glob: str | None = None,
+                 output_mode: str = "lines", max_results: int | None = None, context: int = 0,
+                 ignore_case: bool = False, include_skipped: bool = False) -> Reply:
     started = time.monotonic()
-    target = _root(rt, session_id, root)
-    if isinstance(target, Reply):
-        return target
+    if not is_valid_session_id(session_id):
+        return refusal("BAD_SESSION_ID")
+    if not roots or len(roots) > SEARCH_ROOTS_MAX:
+        return refusal("BAD_ARGUMENTS", session_id, message=f"roots: 1 - {SEARCH_ROOTS_MAX}")
+    targets: list[Path] = []
+    for root in roots:
+        target = _root(rt, session_id, root)
+        if isinstance(target, Reply):
+            return target
+        targets.append(target)
     limit = _limit(max_results, SEARCH_RESULTS_DEFAULT)
     if limit is None or not 0 <= context <= 10:
         return refusal("BAD_ARGUMENTS", session_id, message=f"maxResults 1 - {RESULTS_MAX}, context 0 - 10")
+    if output_mode not in OUTPUT_MODES:
+        return refusal("BAD_ARGUMENTS", session_id, message='outputMode: "lines", "files" or "count"')
+    if context and output_mode != "lines":
+        return refusal("BAD_ARGUMENTS", session_id, message='context needs outputMode "lines"')
     try:
         pattern = re.compile(regex, re.IGNORECASE if ignore_case else 0)
     except re.error as e:
         return refusal("BAD_ARGUMENTS", session_id, message=f"regex: {e}")
+    base = common_base([t if t.is_dir() else t.parent for t in targets])
+    if base is None:
+        return refusal("BAD_ARGUMENTS", session_id, message="roots: no common directory")
     globs = globs_of(glob)
-    base = target if target.is_dir() else target.parent
-    candidates = [target] if target.is_file() else \
-        (p for p, is_dir, _ in walk(target, SEARCH_DEPTH, rt.config.excluded_paths, include_skipped)
-         if not is_dir and name_matches(p.name, globs))
+    candidates = _candidates(targets, globs, rt.config.excluded_paths, include_skipped)
     out: list[str] = []
     used = matches = scanned = with_matches = binary = large = 0
     truncated = False
@@ -138,6 +165,20 @@ def search_files(rt: Runtime, session_id: str, root: str, regex: str, glob: str 
         name = rel(path, base)
         hits = [i for i, line in enumerate(lines) if pattern.search(line)]
         if not hits:
+            continue
+        if output_mode != "lines":
+            # files / count: one line per file, maxResults counts files
+            if with_matches >= limit:
+                truncated = True
+                break
+            line = name if output_mode == "files" else f"{name}: {len(hits)}"
+            used += len(line.encode("utf-8")) + 1
+            if used > rt.config.read_max_bytes:
+                truncated = True
+                break
+            with_matches += 1
+            matches += len(hits)
+            out.append(line)
             continue
         with_matches += 1
         shown: set[int] = set()
@@ -160,7 +201,7 @@ def search_files(rt: Runtime, session_id: str, root: str, regex: str, glob: str 
                 break
         if truncated:
             break
-    header: dict[str, Any] = {"root": str(target), "matches": matches, "files": with_matches, "scanned": scanned,
+    header: dict[str, Any] = {"base": str(base), "matches": matches, "files": with_matches, "scanned": scanned,
                               "seconds": round(time.monotonic() - started, 2)}
     if binary:
         header["skippedBinary"] = binary
@@ -169,6 +210,21 @@ def search_files(rt: Runtime, session_id: str, root: str, regex: str, glob: str 
     if truncated:
         header["truncated"] = True
     return Reply(header, "\n".join(out) or None, False, None, session_id)
+
+
+def _candidates(targets: Sequence[Path], globs: Sequence[str], excluded: Sequence[str],
+                include_skipped: bool) -> Iterator[Path]:
+    """The files to search under every root, in root order, each once even where roots overlap; a file root is searched
+    whatever the glob."""
+    seen: set[Path] = set()
+    for target in targets:
+        paths = [target] if target.is_file() else \
+            (p for p, is_dir, _ in walk(target, SEARCH_DEPTH, excluded, include_skipped)
+             if not is_dir and name_matches(p.name, globs))
+        for path in paths:
+            if path not in seen:
+                seen.add(path)
+                yield path
 
 
 # ==================== listFiles ====================
