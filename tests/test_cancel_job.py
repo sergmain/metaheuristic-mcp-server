@@ -7,7 +7,7 @@ from pathlib import Path
 import anyio
 
 from mh_mcp_server.processes import process_alive
-from support import call, connect, write_home
+from support import call, connect, wait_one, write_home
 
 SID = "20261026-210000-0000cc"
 CHILD = "python -c \"import os, time; print('child=' + str(os.getpid()), flush=True); time.sleep(120)\"; 'never'"
@@ -19,8 +19,7 @@ def test_cancel_kills_a_running_job_and_the_process_it_started(tmp_path: Path):
             header, _, is_error = await call(session, "startJob", sessionId=SID, command=CHILD, name="long")
             assert not is_error, header
             job_id = header["jobId"]
-            header, text, _ = await call(session, "waitJob", sessionId=SID, jobId=job_id, maxSeconds=30,
-                                         untilRegex=r"child=\d+")
+            header, text, _ = await wait_one(session, SID, job_id, maxSeconds=30, untilRegex=r"child=\d+")
             assert header.get("matched"), (header, text)
             child = int(re.search(r"child=(\d+)", text).group(1))
             assert process_alive(child, None), "the job's child runs"
@@ -36,7 +35,7 @@ def test_cancel_kills_a_running_job_and_the_process_it_started(tmp_path: Path):
                 await anyio.sleep(0.2)
             assert not process_alive(child, None), "the job's child is killed with its shell"
 
-            header, text, _ = await call(session, "waitJob", sessionId=SID, jobId=job_id, maxSeconds=5)
+            header, text, _ = await wait_one(session, SID, job_id, maxSeconds=5)
             assert header["state"] == "done" and header["cancelled"] is True, header
             assert "never" not in (text or "")
 
@@ -48,13 +47,13 @@ def test_cancel_reports_a_job_no_longer_running_and_kills_nothing(tmp_path: Path
         async with connect(write_home(tmp_path)) as session:
             header, _, _ = await call(session, "startJob", sessionId=SID, command="'quick'")
             job_id = header["jobId"]
-            header, _, _ = await call(session, "waitJob", sessionId=SID, jobId=job_id, maxSeconds=30)
+            header, _, _ = await wait_one(session, SID, job_id, maxSeconds=30)
             assert header["state"] == "done", header
 
             header, _, is_error = await call(session, "cancelJob", sessionId=SID, jobId=job_id)
             assert not is_error, header
             assert header == {"jobId": job_id, "state": "done", "cancelled": False}
-            header, _, _ = await call(session, "waitJob", sessionId=SID, jobId=job_id, maxSeconds=1)
+            header, _, _ = await wait_one(session, SID, job_id, maxSeconds=1)
             assert "cancelled" not in header and header["exitCode"] == 0, header
 
     anyio.run(main)

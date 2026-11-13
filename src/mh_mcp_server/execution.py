@@ -50,6 +50,7 @@ class Reply:
     is_error: bool = False
     call_id: str | None = None        # the transcript block's call, when there is one
     session_id: str | None = None     # the session whose transcript gets the block
+    session_ids: tuple[str, ...] = ()  # more sessions whose transcripts get the same block (waitJob over several)
 
 
 def refusal(kind: str, session_id: str | None = None, **fields: Any) -> Reply:

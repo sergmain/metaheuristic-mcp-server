@@ -110,6 +110,29 @@ async def call(session, tool: str, **arguments) -> tuple[dict, str | None, bool]
     return header, text, bool(result.isError)
 
 
+async def wait_one(session, session_id: str, job_id: str, since_line: int = 0, **arguments
+                   ) -> tuple[dict, str | None, bool]:
+    """waitJob over one job: (its entry of the header - the header itself for a refusal -, its lines or None,
+    isError)."""
+    header, text, is_error = await call(session, "waitJob", jobs=[{"sessionId": session_id, "jobId": job_id,
+                                                                   "sinceLine": since_line}], **arguments)
+    if is_error:
+        return header, text, True
+    return header["jobs"][0], job_sections(text).get(f"{session_id}/{job_id}"), False
+
+
+def job_sections(text: str | None) -> dict[str, str]:
+    """waitJob's content 1 split at its `== <sessionId>/<jobId> <state>` lines: "<sessionId>/<jobId>" -> its lines."""
+    sections: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    for line in (text or "").splitlines():
+        if line.startswith("== "):
+            current = sections.setdefault(line[3:].split(" ")[0], [])
+        elif current is not None:
+            current.append(line)
+    return {key: "\n".join(lines) for key, lines in sections.items()}
+
+
 @asynccontextmanager
 async def connect_plain(home: Path, stderr_path: Path):
     """A ClientSession to `python -m mh_mcp_server` started as a plain child process - no job object around it,

@@ -30,6 +30,7 @@ from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
 from mh_mcp_server.sql import sql_query as run_sql_query
 from mh_mcp_server.gitcommit import git_commit as run_git_commit
+from mh_mcp_server.jobs import wait_job as run_wait_job
 
 log = logging.getLogger("mh_mcp_server")
 calls_log = logging.getLogger("mh_mcp_server.calls")   # file only (not stderr): wired by __main__.setup_logging
@@ -48,6 +49,16 @@ def request_id_of(mcp: FastMCP) -> Any:
     except LookupError:
         return None
 
+
+def logged_session_ids(arguments: dict[str, Any]) -> Any:
+    """The sessionId a call names for the calls log - for waitJob, its jobs' sessionIds joined by commas."""
+    if "sessionId" in arguments:
+        return arguments["sessionId"]
+    refs = arguments.get("jobs")
+    if isinstance(refs, list):
+        return ",".join(dict.fromkeys(str(r.get("sessionId")) for r in refs if isinstance(r, dict))) or None
+    return None
+
 TOOLS_PHASE_7 = ("getSessionId", "getSession", "executeCommand")
 TOOLS_PHASE_8 = TOOLS_PHASE_7 + ("startJob", "waitJob")
 TOOLS = TOOLS_PHASE_8 + ("readFile", "writeFile", "editFile")
@@ -61,6 +72,13 @@ class Edit(pydantic.BaseModel):
     old: str
     new: str
     count: int = 1
+
+
+class JobRef(pydantic.BaseModel):
+    """One job of a waitJob call, named by its (sessionId, jobId) pair, with its own line cursor."""
+    sessionId: str
+    jobId: str
+    sinceLine: int = 0
 
 
 def build_server(rt: Runtime) -> FastMCP:
@@ -96,12 +114,16 @@ def build_server(rt: Runtime) -> FastMCP:
         return await anyio.to_thread.run_sync(jobs.start_job, rt, sessionId, command, cwd, name)
 
     @mcp.tool(name="waitJob", structured_output=False)
-    async def wait_job(sessionId: str, jobId: str, maxSeconds: int | None = None, sinceLine: int = 0,
+    async def wait_job(jobs: list[JobRef], mode: str = "any", maxSeconds: int | None = None,
                        untilRegex: str | None = None, maxLines: int | None = None) -> Reply:
-        """Waits on a job until it is done (or lost), a line after sinceLine matches untilRegex (then `matched`), or
-        maxSeconds pass. Returns its state, exitCode when done, and the lines after sinceLine (the tail kept within
-        maxLines); pass the returned nextLine back as sinceLine so no line is returned twice."""
-        return await jobs.wait_job(rt, sessionId, jobId, maxSeconds, sinceLine, untilRegex, maxLines)
+        """Waits on 1-20 jobs in one call, each named by its sessionId and jobId (jobs of several sessions
+        may be mixed) with its own sinceLine. mode "any" (default): returns when any job is done or lost, or a line of
+        any job after its sinceLine matches untilRegex; mode "all": when every job is done or lost - a match settles
+        that job without ending the wait. Either returns at maxSeconds. Header: mode, seconds, and per job sessionId,
+        jobId, state, exitCode when done, cancelled, fromLine, nextLine (pass it back as that job's sinceLine so no line
+        is returned twice), matched, omitted - or error JOB_NOT_FOUND for an unknown job, the others answered. Content
+        1: per job with new lines, `== <sessionId>/<jobId> <state>` then its tail (maxLines per job)."""
+        return await run_wait_job(rt, [j.model_dump() for j in jobs], mode, maxSeconds, untilRegex, maxLines)
 
     @mcp.tool(name="readFile", structured_output=False)
     async def read_file(sessionId: str, path: str, fromLine: int = 1, toLine: int | None = None,
@@ -207,7 +229,7 @@ def install_call_handler(mcp: FastMCP, rt: Runtime) -> None:
         name = request.params.name
         arguments: dict[str, Any] = dict(request.params.arguments or {})
         request_id = request_id_of(mcp)
-        calls_log.info("request %s: %s sessionId=%s arrived", request_id, name, arguments.get("sessionId"))
+        calls_log.info("request %s: %s sessionId=%s arrived", request_id, name, logged_session_ids(arguments))
         reply = await _run_tool(tool_manager, name, arguments)
         seconds = time.monotonic() - started
         calls_log.info("request %s: %s done in %.2f s", request_id, name, seconds)
@@ -217,12 +239,16 @@ def install_call_handler(mcp: FastMCP, rt: Runtime) -> None:
         session_id = reply.session_id
         if session_id is None and is_valid_session_id(arguments.get("sessionId")):
             session_id = arguments["sessionId"]
-        if session_id is not None:
-            block = transcript.format_block(at, reply.call_id, name, arguments, reply.header, seconds, text=reply.text)
-            try:
-                await transcript.append(rt.home, session_id, mask(block, secrets))
-            except Exception:
-                log.exception("transcript append failed for session %s", session_id)
+        # waitJob over several sessions: the same block goes to every session the call names
+        targets = list(dict.fromkeys(s for s in (session_id, *reply.session_ids) if s is not None))
+        if targets:
+            block = mask(transcript.format_block(at, reply.call_id, name, arguments, reply.header, seconds,
+                                                 text=reply.text), secrets)
+            for target in targets:
+                try:
+                    await transcript.append(rt.home, target, block)
+                except Exception:
+                    log.exception("transcript append failed for session %s", target)
         contents = [types.TextContent(type="text", text=header_text)]
         if text:
             contents.append(types.TextContent(type="text", text=text))

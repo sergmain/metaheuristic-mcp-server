@@ -11,15 +11,22 @@ return the same line. The returned text is capped keeping the TAIL.
 time is over"): kills a running call's pwsh and every process it started, after writing `cancel.json` beside it; the
 supervisor outlives the kill and writes `exit.json` as for any end, so the call ends `done` with the killed shell's exit
 code, and `waitJob` reports `cancelled`.
+
+`waitJob` over several jobs (0.1.13, plan 056 Phase 2): a call names 1 - WAIT_JOBS_MAX jobs, each by its (sessionId,
+jobId) pair with a `sinceLine` of its own, and waits on all of them in one server-side loop - one round trip instead of
+one per job. mode "any" returns when one job is done or lost or matches `untilRegex`; mode "all" when every job is
+done, lost or matched (a match settles a job without ending the wait). An unknown jobId is an entry's error, not a
+refusal. The call has no sessionId of its own: its transcript block goes to every session it names.
 """
 
 from __future__ import annotations
 
 import re
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 import anyio
 import anyio.to_thread
@@ -34,6 +41,8 @@ from mh_mcp_server.session_state import load_state
 _JOB_ID = re.compile(r"\d{4,}")
 CANCEL_FILE = "cancel.json"
 CANCEL_WAIT_SECONDS = 10
+WAIT_JOBS_MAX = 20
+WAIT_MODES = ("any", "all")
 
 
 def start_job(rt: Runtime, session_id: str, command: str, cwd: str | None = None, name: str | None = None) -> Reply:
@@ -79,39 +88,92 @@ def cancel_job(rt: Runtime, session_id: str, job_id: str) -> Reply:
     return Reply(header, None, False, None, session_id)
 
 
-async def wait_job(rt: Runtime, session_id: str, job_id: str, max_seconds: int | None = None, since_line: int = 0,
+async def wait_job(rt: Runtime, refs: Sequence[Mapping[str, Any]], mode: str = "any", max_seconds: int | None = None,
                    until_regex: str | None = None, max_lines: int | None = None) -> Reply:
-    if not is_valid_session_id(session_id):
-        return refusal("BAD_SESSION_ID")
+    """Waits on every job of `refs` ({"sessionId", "jobId", "sinceLine"} each) in one loop, polling each job not yet
+    settled every rt.poll_seconds, until `mode` is satisfied or `max_seconds` pass."""
+    if not refs or len(refs) > WAIT_JOBS_MAX:
+        return refusal("BAD_ARGUMENTS", message=f"jobs: 1 - {WAIT_JOBS_MAX}")
+    bad = next((ref["sessionId"] for ref in refs if not is_valid_session_id(ref["sessionId"])), None)
+    if bad is not None:
+        return refusal("BAD_SESSION_ID", sessionId=bad)
+    sessions = tuple(dict.fromkeys(ref["sessionId"] for ref in refs))
     wait = rt.config.default_foreground_seconds if max_seconds is None else max_seconds
     if wait > rt.config.max_foreground_seconds:
-        return refusal("TIMEOUT_TOO_LARGE", session_id, max=rt.config.max_foreground_seconds)
-    if wait < 0 or since_line < 0 or (max_lines is not None and max_lines < 1):
-        return refusal("BAD_ARGUMENTS", session_id, message="maxSeconds and sinceLine must be >= 0, maxLines >= 1")
+        return _refused(sessions, "TIMEOUT_TOO_LARGE", max=rt.config.max_foreground_seconds)
+    if mode not in WAIT_MODES:
+        return _refused(sessions, "BAD_ARGUMENTS", message='mode: "any" or "all"')
+    if wait < 0 or any(ref["sinceLine"] < 0 for ref in refs) or (max_lines is not None and max_lines < 1):
+        return _refused(sessions, "BAD_ARGUMENTS", message="maxSeconds and sinceLine must be >= 0, maxLines >= 1")
     try:
         pattern = re.compile(until_regex) if until_regex is not None else None
     except re.error as e:
-        return refusal("BAD_ARGUMENTS", session_id, message=f"untilRegex: {e}")
-    call_dir = runs_dir(rt.home, session_id) / job_id
-    if _JOB_ID.fullmatch(job_id) is None or await anyio.to_thread.run_sync(read_call, call_dir) is None:
-        return refusal("JOB_NOT_FOUND", session_id, jobId=job_id)
+        return _refused(sessions, "BAD_ARGUMENTS", message=f"untilRegex: {e}")
 
-    log = call_dir / "output.log"
-    cursor = _Cursor(since_line)
-    deadline = time.monotonic() + wait
-    matched: str | None = None
+    waits = await anyio.to_thread.run_sync(_open_waits, rt, refs)
+    started = time.monotonic()
+    deadline = started + wait
     while True:
-        state = await anyio.to_thread.run_sync(call_state, call_dir, rt.alive)
-        # the last line counts without its line ending only once nothing can append to it
-        matched = await anyio.to_thread.run_sync(cursor.advance, log, state != "running", pattern)
-        if matched is not None or state != "running":
+        await anyio.to_thread.run_sync(_poll, rt, waits, pattern)
+        live = [w for w in waits if w.error is None]
+        satisfied = any(w.settled for w in live) if mode == "any" else all(w.settled for w in live)
+        if not live or satisfied:
             break
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         await anyio.sleep(min(rt.poll_seconds, remaining))
-    return await anyio.to_thread.run_sync(_reply, rt, session_id, job_id, call_dir, state, cursor, matched,
-                                          rt.config.max_lines if max_lines is None else max_lines)
+    seconds = round(time.monotonic() - started, 2)
+    reply = await anyio.to_thread.run_sync(_reply, rt, mode, seconds, waits,
+                                           rt.config.max_lines if max_lines is None else max_lines)
+    return replace(reply, session_id=sessions[0], session_ids=sessions[1:])
+
+
+def _refused(sessions: tuple[str, ...], kind: str, **fields: Any) -> Reply:
+    """A refusal whose transcript block goes to every session the call names."""
+    return replace(refusal(kind, sessions[0], **fields), session_ids=sessions[1:])
+
+
+class _Wait:
+    """One job of a waitJob call: its call directory (None when there is no such job), its cursor, and where the wait
+    left it."""
+
+    def __init__(self, session_id: str, job_id: str, call_dir: Path | None, since_line: int) -> None:
+        self.session_id = session_id
+        self.job_id = job_id
+        self.call_dir = call_dir
+        self.cursor = _Cursor(since_line)
+        self.state = "running"
+        self.matched: str | None = None
+
+    @property
+    def error(self) -> str | None:
+        return "JOB_NOT_FOUND" if self.call_dir is None else None
+
+    @property
+    def settled(self) -> bool:
+        """Done, lost, or stopped at a matching line - nothing more is read for it in this call."""
+        return self.matched is not None or self.state != "running"
+
+
+def _open_waits(rt: Runtime, refs: Sequence[Mapping[str, Any]]) -> list[_Wait]:
+    waits: list[_Wait] = []
+    for ref in refs:
+        session_id, job_id = ref["sessionId"], ref["jobId"]
+        call_dir = runs_dir(rt.home, session_id) / job_id
+        known = _JOB_ID.fullmatch(job_id) is not None and read_call(call_dir) is not None
+        waits.append(_Wait(session_id, job_id, call_dir if known else None, ref["sinceLine"]))
+    return waits
+
+
+def _poll(rt: Runtime, waits: list[_Wait], pattern: re.Pattern | None) -> None:
+    """One round over the jobs not yet settled: the state first, then the lines added since the last round."""
+    for w in waits:
+        if w.error is not None or w.settled:
+            continue
+        w.state = call_state(w.call_dir, rt.alive)
+        # the last line counts without its line ending only once nothing can append to it
+        w.matched = w.cursor.advance(w.call_dir / "output.log", w.state != "running", pattern)
 
 
 class _Cursor:
@@ -148,28 +210,35 @@ class _Cursor:
         return None
 
 
-def _reply(rt: Runtime, session_id: str, job_id: str, call_dir: Path, state: str, cursor: _Cursor,
-           matched: str | None, max_lines: int) -> Reply:
-    kept, omitted = cap_tail(cursor.collected, max_lines, rt.config.max_bytes)
-    next_line = max(cursor.count, cursor.since_line)
-    header: dict[str, Any] = {"jobId": job_id, "state": state}
-    if (call_dir / CANCEL_FILE).is_file():
-        header["cancelled"] = True
-    exit_record = read_exit(call_dir) if state == "done" else None
-    if exit_record is not None:
-        header["exitCode"] = exit_record.get("exit")
-        header["seconds"] = exit_record.get("seconds")
-    else:
-        call = read_call(call_dir) or {}
-        created = call.get("createdAt")
-        header["seconds"] = round(time.time() - datetime.fromisoformat(created).timestamp(), 2) if created else None
-    header["fromLine"] = kept[0].index + 1 if kept else next_line + 1
-    header["nextLine"] = next_line
-    if matched is not None:
-        header["matched"] = matched
-    if omitted:
-        header["omitted"] = omitted
-    bad = sum(line.bad for line in kept)
-    if bad:
-        header["encodingErrors"] = bad
-    return Reply(header, "\n".join(line.text for line in kept) or None, False, None, session_id)
+def _reply(rt: Runtime, mode: str, seconds: float, waits: list[_Wait], max_lines: int) -> Reply:
+    """Header {"mode", "seconds", "jobs": [...]}; content 1 one section per job with new lines - `== <sessionId>/<jobId>
+    <state>` and then its tail, `max_lines` per job and the reply's byte budget split evenly across those jobs."""
+    budget = rt.config.max_bytes // max(1, sum(1 for w in waits if w.cursor.collected))
+    entries: list[dict[str, Any]] = []
+    text: list[str] = []
+    for w in waits:
+        if w.error is not None:
+            entries.append({"sessionId": w.session_id, "jobId": w.job_id, "error": w.error})
+            continue
+        kept, omitted = cap_tail(w.cursor.collected, max_lines, budget)
+        next_line = max(w.cursor.count, w.cursor.since_line)
+        entry: dict[str, Any] = {"sessionId": w.session_id, "jobId": w.job_id, "state": w.state}
+        exit_record = read_exit(w.call_dir) if w.state == "done" else None
+        if exit_record is not None:
+            entry["exitCode"] = exit_record.get("exit")
+        if (w.call_dir / CANCEL_FILE).is_file():
+            entry["cancelled"] = True
+        entry["fromLine"] = kept[0].index + 1 if kept else next_line + 1
+        entry["nextLine"] = next_line
+        if w.matched is not None:
+            entry["matched"] = w.matched
+        if omitted:
+            entry["omitted"] = omitted
+        bad = sum(line.bad for line in kept)
+        if bad:
+            entry["encodingErrors"] = bad
+        entries.append(entry)
+        if kept:
+            text.append(f"== {w.session_id}/{w.job_id} {w.state}")
+            text.extend(line.text for line in kept)
+    return Reply({"mode": mode, "seconds": seconds, "jobs": entries}, "\n".join(text) or None)
