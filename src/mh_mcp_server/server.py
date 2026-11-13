@@ -25,6 +25,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 
 from mh_mcp_server import execution, files, finder, jobs, memory, transcript
+from mh_mcp_server import __version__
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
 from mh_mcp_server.session_id import is_valid_session_id
@@ -66,6 +67,9 @@ TOOLS_0_1_9 = TOOLS + ("getMemory",)
 TOOLS_0_1_10 = TOOLS_0_1_9 + ("searchFiles", "listFiles", "fileInfo")
 TOOLS_0_1_11 = TOOLS_0_1_10 + ("cancelJob",)
 TOOLS_0_1_12 = TOOLS_0_1_11 + ("sqlQuery", "gitCommit")
+# 0.1.13 (plan 056): no new tool - waitJob over several jobs, searchFiles over several roots with files / count modes,
+# readFile over several ranges; gitInspect not built (Phase 5 no-go, 2026-11-12)
+TOOLS_0_1_13 = TOOLS_0_1_12
 
 
 class Edit(pydantic.BaseModel):
@@ -258,8 +262,9 @@ def install_call_handler(mcp: FastMCP, rt: Runtime) -> None:
         # waitJob over several sessions: the same block goes to every session the call names
         targets = list(dict.fromkeys(s for s in (session_id, *reply.session_ids) if s is not None))
         if targets:
+            nbytes = len(header_text.encode("utf-8")) + (len(text.encode("utf-8")) if text else 0)
             block = mask(transcript.format_block(at, reply.call_id, name, arguments, reply.header, seconds,
-                                                 text=reply.text), secrets)
+                                                 text=reply.text, nbytes=nbytes, version=__version__), secrets)
             for target in targets:
                 try:
                     await transcript.append(rt.home, target, block)

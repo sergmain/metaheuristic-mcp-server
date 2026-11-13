@@ -34,6 +34,28 @@ def test_format_block_without_a_call_id_and_without_text():
     assert block.endswith('"sessionId": "20261023-154207-0a1b2c"\n}\n')
 
 
+def test_format_block_head_carries_the_response_bytes_and_the_server_version():
+    # 0.1.13 (plan 056): for usage analysis over the transcripts
+    block = format_block(AT, "0007", "waitJob", {}, {"mode": "any"}, 1.844, nbytes=1834, version="0.1.13")
+    assert block.splitlines()[0] == "=== 2026-10-23T15:42:07.512+03:00 | call 0007 | waitJob | 1.84 s | 1834 B | 0.1.13"
+
+
+def test_a_calls_transcript_head_has_exactly_the_bytes_the_client_received_and_the_version(tmp_path: Path):
+    from mh_mcp_server import __version__
+    from support import connect, write_home
+    home = write_home(tmp_path)
+
+    async def main():
+        async with connect(home) as session:
+            result = await session.call_tool("executeCommand", {"sessionId": SID, "command": "'Привет'"})
+            assert not result.isError, result
+            return sum(len(c.text.encode("utf-8")) for c in result.content)
+
+    received = anyio.run(main)
+    head = transcript_path(home, SID).read_text(encoding="utf-8").splitlines()[0]
+    assert head.endswith(f" | {received} B | {__version__}"), (head, received)
+
+
 def test_format_block_writes_a_str_response_as_it_is_and_uses_lf_only():
     block = format_block(AT, "0001", "executeCommand", {}, "tool failed:\r\nboom", 0.1, text="x\r\ny\r\n")
     assert "\r" not in block

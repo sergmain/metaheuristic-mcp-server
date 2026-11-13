@@ -40,6 +40,15 @@ transcripts, 2026-10-27 - 11-09: 726 `psql` commands, 353 commits / pushes):
 Both run their child process inside the call (`children.py`): stdin is closed at once, and a child still running at
 the deadline is killed and reported `timedOut`.
 
+Since 0.1.13 three tools take several targets in one call, because every round trip re-reads the chat's whole context
+(plan 056): `waitJob(jobs, mode?, maxSeconds?, untilRegex?, maxLines?)` waits on 1-20 jobs, each named by its
+`sessionId` and `jobId` with its own `sinceLine`, until any (`mode="any"`) or every (`"all"`) job is done, lost or
+matched; it has no sessionId of its own and its transcript block goes to every session it names. `searchFiles` takes
+`roots` (1-20, paths relative to their deepest common directory, `base`) and `outputMode` `lines` / `files` / `count`.
+`readFile` takes `ranges` (1-20 `{path, fromLine, toLine}`) instead of `path`, sharing one read budget. No
+compatibility form is kept: one server, one consumer. Every transcript block's head line also carries the bytes the
+client received and the server version: `=== <at> | call <id> | <tool> | <s> s | <bytes> B | <version>`.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 

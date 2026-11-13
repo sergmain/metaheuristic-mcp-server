@@ -43,7 +43,7 @@ def test_two_sessions_run_concurrently_on_one_connection(tmp_path: Path):
 
 def test_tools_list_is_exactly_the_tools_of_this_version(tmp_path: Path):
     # Phase 7: three tools; Phase 8 adds startJob and waitJob; Phase 9 readFile, writeFile, editFile; 0.1.9 getMemory;
-    # 0.1.10 searchFiles, listFiles, fileInfo; 0.1.11 cancelJob; 0.1.12 sqlQuery, gitCommit
+    # 0.1.10 searchFiles, listFiles, fileInfo; 0.1.11 cancelJob; 0.1.12 sqlQuery, gitCommit; 0.1.13 none (gitInspect no-go)
     async def main():
         async with connect(write_home(tmp_path)) as session:
             tools = await session.list_tools()

@@ -30,18 +30,26 @@ def transcript_path(home: Path, session_id: str) -> Path:
 
 
 def format_block(at: datetime, call_id: str | None, tool: str, request: Mapping, response: Mapping | str,
-                 seconds: float, text: str | None = None) -> str:
+                 seconds: float, text: str | None = None, nbytes: int | None = None, version: str | None = None) -> str:
     """One transcript block.
 
     `request` and a Mapping `response` are written as JSON (indent 2, non-ASCII kept); a str `response` is written
     as it is. `text` is the raw text content of the response (content 1), written after it when non-empty. Every
     line ends with LF.
+
+    Since 0.1.13 (plan 056) the head line also carries, when given, `nbytes` - the bytes the client received, content 0
+    as sent plus content 1 - and the `version` of the server that answered: `=== <at> | call <id> | <tool> | <s> s |
+    <nbytes> B | <version>`, for usage analysis over the transcripts.
     """
     head = [at.isoformat(timespec="milliseconds")]
     if call_id is not None:
         head.append(f"call {call_id}")
     head.append(tool)
     head.append(f"{seconds:.2f} s")
+    if nbytes is not None:
+        head.append(f"{nbytes} B")
+    if version is not None:
+        head.append(version)
     parts = [
         "=== " + " | ".join(head),
         "--- request",
