@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+import anyio
+
 from mh_mcp_server.config import load_config, read_text_if_exists
 from mh_mcp_server.execution import production_runtime
-from mh_mcp_server.files import edit_file, file_stats, offset_of_line, read_file, write_file
-from support import REPO, write_home
+from mh_mcp_server.files import RANGES_MAX, edit_file, file_stats, offset_of_line, read_file, write_file
+from support import REPO, call, connect, write_home
 
 FIXTURES = REPO / "tests" / "fixtures"
 SID = "20261023-180000-0000ff"
@@ -138,6 +140,90 @@ def test_offset_of_line(tmp_path: Path):
     path = tmp_path / "o.txt"
     path.write_bytes(b"ab\ncd\nef")
     assert [offset_of_line(path, n) for n in (1, 2, 3, 4)] == [0, 3, 6, 8]
+
+
+# ==================== readFile over several ranges (0.1.13, plan 056 Phase 4) ====================
+
+L434 = str(FIXTURES / "lines-434.txt")
+LF = str(FIXTURES / "lf.txt")
+CRLF = str(FIXTURES / "crlf.txt")
+
+
+def test_read_ranges_three_ranges_over_two_files_in_one_call(tmp_path: Path):
+    reply = read_file(runtime(tmp_path), SID, ranges=[{"path": L434, "fromLine": 10, "toLine": 11}, {"path": LF},
+                                                      {"path": L434, "fromLine": -2}])
+
+    infos = reply.header["ranges"]
+    assert [(i["totalLines"], i["fromLine"], i["toLine"]) for i in infos] == [(434, 10, 11), (3, 1, 3), (434, 433, 434)]
+    assert all("nextFromLine" not in i and i["lineEnding"] == "lf" and i["bom"] is False for i in infos)
+    p434, plf = infos[0]["path"], infos[1]["path"]
+    assert reply.text.splitlines() == [f"== {p434} 10-11", "10: line 010", "11: line 011",
+                                       f"== {plf} 1-3", "1: line one", "2: line two", "3: line three",
+                                       f"== {p434} 433-434", "433: line 433", "434: line 434"]
+
+
+def test_read_ranges_a_line_budget_ending_in_the_second_range(tmp_path: Path):
+    reply = read_file(runtime(tmp_path), SID, max_lines=5,
+                      ranges=[{"path": LF}, {"path": L434, "fromLine": 10, "toLine": 20}, {"path": CRLF}])
+
+    first, second, third = reply.header["ranges"]
+    assert (first["fromLine"], first["toLine"]) == (1, 3) and "nextFromLine" not in first
+    assert (second["fromLine"], second["toLine"], second["nextFromLine"]) == (10, 11, 12)
+    assert (third["totalLines"], third["fromLine"], third["toLine"], third["nextFromLine"]) == (3, 1, 0, 1)
+    assert third["lineEnding"] == "crlf"
+    assert [line for line in reply.text.splitlines() if line.startswith("== ")] == \
+        [f"== {first['path']} 1-3", f"== {second['path']} 10-11"]
+
+
+def test_read_ranges_a_byte_budget_shared_by_the_ranges_and_their_section_lines(tmp_path: Path):
+    rt = runtime(tmp_path, "[read]\nmaxBytes = 1000\n")
+    reply = read_file(rt, SID, ranges=[{"path": L434, "fromLine": 1, "toLine": 5},
+                                       {"path": L434, "fromLine": 10, "toLine": 300}, {"path": LF}])
+
+    first, second, third = reply.header["ranges"]
+    assert (first["toLine"], "nextFromLine" in first) == (5, False)
+    assert 10 < second["toLine"] < 300 and second["nextFromLine"] == second["toLine"] + 1
+    assert (third["toLine"], third["nextFromLine"]) == (0, 1)
+    assert len(reply.text.encode("utf-8")) + 1 <= 1000
+    assert reply.text.splitlines()[-1] == f"{second['toLine']}: line {second['toLine']:03d}"
+
+
+def test_read_ranges_a_missing_or_refused_path_is_its_entrys_error_and_the_others_are_read(tmp_path: Path):
+    absent = tmp_path / "absent.txt"
+    reply = read_file(runtime(tmp_path), SID, ranges=[{"path": LF, "toLine": 1}, {"path": str(absent)},
+                                                      {"path": "C:/Windows/win.ini"},
+                                                      {"path": L434, "fromLine": 7, "toLine": 7}])
+
+    one, missing, outside, last = reply.header["ranges"]
+    assert missing == {"path": str(absent), "error": "NOT_FOUND"}
+    assert outside["error"] == "PATH_OUTSIDE_ROOTS"
+    assert (one["toLine"], last["fromLine"], last["toLine"]) == (1, 7, 7)
+    assert reply.text.splitlines() == [f"== {one['path']} 1-1", "1: line one", f"== {last['path']} 7-7", "7: line 007"]
+
+
+def test_read_ranges_refusals(tmp_path: Path):
+    rt = runtime(tmp_path)
+    assert read_file(rt, SID, LF, ranges=[{"path": LF}]).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID, from_line=2, ranges=[{"path": LF}]).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID, ranges=[]).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID, ranges=[{"path": LF}] * (RANGES_MAX + 1)).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID, ranges=[{"path": LF, "fromLine": 0}]).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, SID, ranges=[{"path": LF, "toLine": 0}]).header["error"] == "BAD_ARGUMENTS"
+    assert read_file(rt, "bad", ranges=[{"path": LF}]).header == {"error": "BAD_SESSION_ID"}
+
+
+def test_read_file_tool_takes_ranges_through_the_server(tmp_path: Path):
+    async def main():
+        async with connect(write_home(tmp_path)) as session:
+            header, text, is_error = await call(session, "readFile", sessionId=SID,
+                                                ranges=[{"path": LF, "fromLine": 2, "toLine": 2}])
+            assert not is_error, header
+            assert text == f"== {header['ranges'][0]['path']} 2-2\n2: line two"
+            header, text, is_error = await call(session, "readFile", sessionId=SID, path=LF, toLine=1)
+            assert not is_error and text == "1: line one" and header["totalLines"] == 3, header
+
+    anyio.run(main)
 
 
 # ==================== editFile ====================

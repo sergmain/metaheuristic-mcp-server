@@ -4,6 +4,10 @@ UTF-8; a BOM is kept when present and never added; CRLF and LF files keep their 
 the edited text; a file with mixed line endings is refused by editFile rather than normalized; every write is a temp
 file in the same directory plus os.replace; an editFile call is all-or-nothing. Line counting is streamed in chunks,
 so a large log is never loaded whole.
+
+readFile over several ranges (0.1.13, plan 056 Phase 4): `ranges` - 1 - RANGES_MAX {path, fromLine, toLine}, instead of
+path / fromLine / toLine - reads several slices of one or more files in one call. The read budget is shared by the whole
+call, ranges taken in order; a refused or missing path is its entry's error and the call goes on.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ BINARY_PROBE = 8192
 REPLACE_RETRIES = 3
 REPLACE_RETRY_SECONDS = 0.1
 OLD_PREVIEW_CHARS = 120
+RANGES_MAX = 20
 
 
 @dataclass(frozen=True)
@@ -183,8 +188,14 @@ def atomic_write(path: Path, data: bytes) -> None:
 
 # ==================== tools ====================
 
-def read_file(rt: Runtime, session_id: str, path: str, from_line: int = 1, to_line: int | None = None,
-              max_lines: int | None = None) -> Reply:
+def read_file(rt: Runtime, session_id: str, path: str | None = None, from_line: int = 1, to_line: int | None = None,
+              max_lines: int | None = None, ranges: Sequence[Mapping[str, Any]] | None = None) -> Reply:
+    if ranges is not None:
+        return _read_ranges(rt, session_id, path, from_line, to_line, max_lines, ranges)
+    if path is None:
+        if not is_valid_session_id(session_id):
+            return refusal("BAD_SESSION_ID")
+        return refusal("BAD_ARGUMENTS", session_id, message="path or ranges: exactly one of them")
     # the home's runs/ dir is readable too: every logPath this server hands out lies there, and a header that names a
     # log the caller cannot read is a dead end (the home itself is outside the roots, e.g. C:/_mh/mh-mcp-server)
     target = _target(rt, session_id, path, (*rt.config.read_roots, rt.home / RUNS_DIR))
@@ -212,6 +223,72 @@ def read_file(rt: Runtime, session_id: str, path: str, from_line: int = 1, to_li
     if truncated is not None:
         header["truncatedLine"] = truncated
     return Reply(header, "\n".join(entries) or None, False, None, session_id)
+
+
+def _read_ranges(rt: Runtime, session_id: str, path: str | None, from_line: int, to_line: int | None,
+                 max_lines: int | None, ranges: Sequence[Mapping[str, Any]]) -> Reply:
+    """Header {"ranges": [...]}, one entry per range as a single read's header (or {"path", "error"}); content 1 per range
+    read `== <path> <fromLine>-<toLine>` and its lines. A range the budget cut gets nextFromLine; a range the budget never
+    reached is listed with nextFromLine = its fromLine."""
+    if not is_valid_session_id(session_id):
+        return refusal("BAD_SESSION_ID")
+    if path is not None or from_line != 1 or to_line is not None:
+        return refusal("BAD_ARGUMENTS", session_id, message="ranges excludes path, fromLine and toLine")
+    if not ranges or len(ranges) > RANGES_MAX:
+        return refusal("BAD_ARGUMENTS", session_id, message=f"ranges: 1 - {RANGES_MAX}")
+    if (max_lines is not None and max_lines < 1) or any(
+            r.get("fromLine", 1) == 0 or (r.get("toLine") is not None and r["toLine"] < 1) for r in ranges):
+        return refusal("BAD_ARGUMENTS", session_id, message="fromLine must not be 0; toLine and maxLines >= 1")
+    roots = (*rt.config.read_roots, rt.home / RUNS_DIR)
+    lines_left = rt.config.read_max_lines if max_lines is None else min(max_lines, rt.config.read_max_lines)
+    bytes_left = rt.config.read_max_bytes
+    read_any = exhausted = False
+    infos: list[dict[str, Any]] = []
+    text: list[str] = []
+    for r in ranges:
+        target = _target(rt, session_id, r["path"], roots)
+        if isinstance(target, Reply):
+            infos.append({"path": r["path"], **target.header})
+            continue
+        if not target.is_file():
+            infos.append({"path": str(target), "error": "NOT_FOUND"})
+            continue
+        stats = file_stats(target)
+        if stats.binary:
+            infos.append({"path": str(target), "error": "BINARY_FILE"})
+            continue
+        total = stats.lines
+        first = r.get("fromLine", 1)
+        start = first if first > 0 else max(total + first + 1, 1)
+        end = total if r.get("toLine") is None else min(r["toLine"], total)
+        lines: list[str] = []
+        truncated: int | None = None
+        if start <= end and not exhausted:
+            # the first range read keeps a single read's guarantee of progress; a later one reserves its section line
+            reserve = len(f"== {target} {start}-{end}".encode("utf-8")) + 1 if read_any else 0
+            if lines_left > 0 and bytes_left - reserve > 0:
+                lines, truncated = read_numbered(target, start, end, lines_left, bytes_left - reserve, stats.bom)
+            if truncated is not None and read_any:
+                # a line cut to fit is how a lone read makes progress; after other ranges it waits for the next call
+                lines, truncated = [], None
+        last = start + len(lines) - 1
+        info: dict[str, Any] = {"path": str(target), "totalLines": total, "fromLine": start, "toLine": last}
+        if last < end:
+            info["nextFromLine"] = last + 1
+            exhausted = True
+        info["lineEnding"] = stats.line_ending
+        info["bom"] = stats.bom
+        if truncated is not None:
+            info["truncatedLine"] = truncated
+        infos.append(info)
+        if lines:
+            read_any = True
+            section = f"== {target} {start}-{last}"
+            text.append(section)
+            text.extend(lines)
+            lines_left -= len(lines)
+            bytes_left -= len(section.encode("utf-8")) + 1 + sum(len(line.encode("utf-8")) + 1 for line in lines)
+    return Reply({"ranges": infos}, "\n".join(text) or None, False, None, session_id)
 
 
 def write_file(rt: Runtime, session_id: str, path: str, content: str, mode: str = "create",

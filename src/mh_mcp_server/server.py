@@ -81,6 +81,13 @@ class JobRef(pydantic.BaseModel):
     sinceLine: int = 0
 
 
+class Range(pydantic.BaseModel):
+    """One slice of a readFile call over several ranges."""
+    path: str
+    fromLine: int = 1
+    toLine: int | None = None
+
+
 def build_server(rt: Runtime) -> FastMCP:
     mcp = FastMCP("mh-mcp", log_level="WARNING")
 
@@ -126,13 +133,18 @@ def build_server(rt: Runtime) -> FastMCP:
         return await run_wait_job(rt, [j.model_dump() for j in jobs], mode, maxSeconds, untilRegex, maxLines)
 
     @mcp.tool(name="readFile", structured_output=False)
-    async def read_file(sessionId: str, path: str, fromLine: int = 1, toLine: int | None = None,
-                        maxLines: int | None = None) -> Reply:
+    async def read_file(sessionId: str, path: str | None = None, fromLine: int = 1, toLine: int | None = None,
+                        maxLines: int | None = None, ranges: list[Range] | None = None) -> Reply:
         """Reads a text file as `N: <line>` lines. totalLines is always the file's real line count; fromLine < 0
         means the last |fromLine| lines. A read stops at the configured line/byte budget on a line boundary and
         returns nextFromLine - continue from it; nothing in the middle is ever skipped. A relative path is relative
-        to the session's working directory."""
-        return await anyio.to_thread.run_sync(files.read_file, rt, sessionId, path, fromLine, toLine, maxLines)
+        to the session's working directory. `ranges` - 1-20 {path, fromLine, toLine}, given instead of path /
+        fromLine / toLine - reads several slices of one or more files in one call: the budget is shared, ranges taken
+        in order; a range the budget cut gets nextFromLine, one it never reached has nextFromLine = its fromLine; a
+        refused or missing path is its entry's error, the other ranges are read. Header then {"ranges": [...]} with a
+        single read's header per range; content 1 per range read `== <path> <fromLine>-<toLine>` and its lines."""
+        return await anyio.to_thread.run_sync(files.read_file, rt, sessionId, path, fromLine, toLine, maxLines,
+                                              None if ranges is None else [r.model_dump() for r in ranges])
 
     @mcp.tool(name="writeFile", structured_output=False)
     async def write_file(sessionId: str, path: str, content: str, mode: str = "create",
