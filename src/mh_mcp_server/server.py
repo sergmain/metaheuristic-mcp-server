@@ -70,6 +70,8 @@ TOOLS_0_1_12 = TOOLS_0_1_11 + ("sqlQuery", "gitCommit")
 # 0.1.13 (plan 056): no new tool - waitJob over several jobs, searchFiles over several roots with files / count modes,
 # readFile over several ranges; gitInspect not built (Phase 5 no-go, 2026-11-12)
 TOOLS_0_1_13 = TOOLS_0_1_12
+# 0.1.14: no new tool - waitJob's reply carries getMemory's reading taken when the wait ended
+TOOLS_0_1_14 = TOOLS_0_1_13
 
 
 class Edit(pydantic.BaseModel):
@@ -132,8 +134,10 @@ def build_server(rt: Runtime) -> FastMCP:
         any job after its sinceLine matches untilRegex; mode "all": when every job is done or lost - a match settles
         that job without ending the wait. Either returns at maxSeconds. Header: mode, seconds, and per job sessionId,
         jobId, state, exitCode when done, cancelled, fromLine, nextLine (pass it back as that job's sinceLine so no line
-        is returned twice), matched, omitted - or error JOB_NOT_FOUND for an unknown job, the others answered. Content
-        1: per job with new lines, `== <sessionId>/<jobId> <state>` then its tail (maxLines per job)."""
+        is returned twice), matched, omitted - or error JOB_NOT_FOUND for an unknown job, the others answered; and
+        memory - getMemory's reading taken when the wait ended (usedGB, availableGB, totalGB, memoryLoad, commitUsedGB,
+        commitFreeGB, commitLimitGB), to decide what to start next. Content 1: per job with new lines,
+        `== <sessionId>/<jobId> <state>` then its tail (maxLines per job)."""
         return await run_wait_job(rt, [j.model_dump() for j in jobs], mode, maxSeconds, untilRegex, maxLines)
 
     @mcp.tool(name="readFile", structured_output=False)

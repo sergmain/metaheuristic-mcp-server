@@ -285,3 +285,29 @@ def test_mode_all_a_match_settles_its_job_without_ending_the_wait(tmp_path: Path
             await wait_one(session, SID, a["jobId"], since_line=first["nextLine"], maxSeconds=30)
 
     anyio.run(main)
+
+
+# ==================== memory in waitJob's reply (0.1.14) ====================
+
+def test_wait_job_reply_carries_get_memorys_reading_taken_when_the_wait_ended(tmp_path: Path):
+    async def main():
+        async with connect(write_home(tmp_path)) as session:
+            job, _, _ = await call(session, "startJob", sessionId=SID, command="'x'")
+            header, _, is_error = await call(session, "waitJob", maxSeconds=30,
+                                             jobs=[{"sessionId": SID, "jobId": job["jobId"]}])
+            assert not is_error, header
+            assert list(header) == ["mode", "seconds", "jobs", "memory"]
+            got, _, _ = await call(session, "getMemory", sessionId=SID)
+            if sys.platform == "win32":
+                assert set(header["memory"]) == set(got) and header["memory"]["totalGB"] == got["totalGB"]
+            else:
+                assert header["memory"]["error"] == "MEMORY_UNAVAILABLE"
+
+            # a call that answered only entry errors returned too, and carries the reading as well
+            header, _, is_error = await call(session, "waitJob", jobs=[{"sessionId": SID, "jobId": "0099"}])
+            assert not is_error and "memory" in header
+            # a refusal waited for nothing
+            header, _, is_error = await call(session, "waitJob", jobs=[])
+            assert is_error and "memory" not in header
+
+    anyio.run(main)

@@ -33,6 +33,7 @@ import anyio.to_thread
 
 from mh_mcp_server.calls import _write_json_atomic, allocate_call, call_state, read_call, read_exit, read_pids, runs_dir
 from mh_mcp_server.execution import Reply, Runtime, admit_call, refusal, spawn_call
+from mh_mcp_server.memory import memory_or_error
 from mh_mcp_server.output import Line, cap_tail, decode_line
 from mh_mcp_server.processes import kill_tree
 from mh_mcp_server.session_id import is_valid_session_id
@@ -211,7 +212,7 @@ class _Cursor:
 
 
 def _reply(rt: Runtime, mode: str, seconds: float, waits: list[_Wait], max_lines: int) -> Reply:
-    """Header {"mode", "seconds", "jobs": [...]}; content 1 one section per job with new lines - `== <sessionId>/<jobId>
+    """Header {"mode", "seconds", "jobs": [...], "memory"}; content 1 one section per job with new lines - `== <sessionId>/<jobId>
     <state>` and then its tail, `max_lines` per job and the reply's byte budget split evenly across those jobs."""
     budget = rt.config.max_bytes // max(1, sum(1 for w in waits if w.cursor.collected))
     entries: list[dict[str, Any]] = []
@@ -241,4 +242,6 @@ def _reply(rt: Runtime, mode: str, seconds: float, waits: list[_Wait], max_lines
         if kept:
             text.append(f"== {w.session_id}/{w.job_id} {w.state}")
             text.extend(line.text for line in kept)
-    return Reply({"mode": mode, "seconds": seconds, "jobs": entries}, "\n".join(text) or None)
+    # 0.1.14: memory read once the wait is over, so the chat can decide what to start next without a getMemory call
+    return Reply({"mode": mode, "seconds": seconds, "jobs": entries, "memory": memory_or_error()},
+                 "\n".join(text) or None)

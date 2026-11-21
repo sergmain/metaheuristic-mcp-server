@@ -49,6 +49,15 @@ def test_get_memory_answers_the_header_for_its_session():
     assert abs(header["commitUsedGB"] + header["commitFreeGB"] - header["commitLimitGB"]) <= 0.2, header
 
 
+@windows_only
+def test_memory_or_error_is_get_memorys_header_of_a_fresh_reading():
+    reading = memory.memory_or_error()
+
+    assert set(reading) == set(memory.get_memory(SID).header)
+    assert reading["totalGB"] == memory.gib(memory.read_status().total_phys)
+    assert abs(reading["usedGB"] + reading["availableGB"] - reading["totalGB"]) <= 0.2
+
+
 @pytest.mark.parametrize("bad", ["", "x", "20261026-153000-00000", "2026-10-26"])
 def test_get_memory_refuses_a_bad_session_id(bad):
     reply = memory.get_memory(bad)

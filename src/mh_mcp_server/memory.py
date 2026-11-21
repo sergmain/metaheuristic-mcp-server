@@ -79,3 +79,13 @@ def get_memory(session_id: str) -> Reply:
     except OSError as e:
         return refusal("MEMORY_UNAVAILABLE", session_id, message=str(e))
     return Reply(memory_header(status), session_id=session_id)
+
+
+def memory_or_error() -> dict:
+    """One reading as getMemory's header, or {"error": "MEMORY_UNAVAILABLE", "message"} when it cannot be read - for a
+    reply that carries the memory beside its own result (waitJob since 0.1.14: the chat decides what to start next
+    from what is free, without a getMemory round trip)."""
+    try:
+        return memory_header(read_status())
+    except OSError as e:
+        return {"error": "MEMORY_UNAVAILABLE", "message": str(e)}

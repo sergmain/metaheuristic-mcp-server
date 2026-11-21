@@ -49,6 +49,11 @@ matched; it has no sessionId of its own and its transcript block goes to every s
 compatibility form is kept: one server, one consumer. Every transcript block's head line also carries the bytes the
 client received and the server version: `=== <at> | call <id> | <tool> | <s> s | <bytes> B | <version>`.
 
+Since 0.1.14 `waitJob`'s header also carries `memory`: getMemory's reading, taken once the wait is over (`usedGB`,
+`availableGB`, `totalGB`, `memoryLoad`, `commitUsedGB`, `commitFreeGB`, `commitLimitGB`; `{"error":
+"MEMORY_UNAVAILABLE", "message"}` when it cannot be read), so the chat decides what to start next from what is free
+without a separate getMemory round trip. A refused call carries none.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 
