@@ -35,6 +35,10 @@ def test_defaults_when_the_file_is_absent():
     assert c.excluded_paths == ()
     assert (c.sql_psql, c.sql_host, c.sql_port, c.sql_user, c.sql_database, c.sql_password_variable) == \
         ("psql", "localhost", 5432, "mh_mcp_ro", "mh", "MH_MCP_SQL_PASSWORD")
+    assert (c.semaphores_enabled, c.semaphore_ttl_seconds) == (True, 600)
+    assert c.maven_dirs == (Path("C:/sandbox/_work/doc-processing-angular/java/legal"),
+                            Path("C:/sandbox/_work/doc-processing-angular/java/call-cc-func"))
+    assert c.maven_multi_app == (Path("C:/sandbox/_work/metaheuristic"), Path("C:/sandbox/_work/jcons"))
 
 
 def test_the_default_file_text_loads_to_the_defaults():
@@ -64,6 +68,10 @@ def test_the_default_file_text_loads_to_the_defaults():
     ('[sql]\nuser = "reader"', "sql_user", "reader"),
     ('[sql]\ndatabase = "postgres"', "sql_database", "postgres"),
     ('[sql]\npasswordVariable = "READER_PW"', "sql_password_variable", "READER_PW"),
+    ('[semaphores]\nenabled = false', "semaphores_enabled", False),
+    ('[semaphores]\nttlSeconds = 120', "semaphore_ttl_seconds", 120),
+    ('[semaphores]\nmavenDirs = ["C:/w/a"]', "maven_dirs", (Path("C:/w/a"),)),
+    ('[semaphores]\nmavenMultiApp = []', "maven_multi_app", ()),
 ])
 def test_each_key_overrides_its_default(toml: str, attribute: str, expected):
     assert getattr(load_config(HOME, text_of(toml)), attribute) == expected
@@ -101,6 +109,9 @@ def test_an_unknown_table_or_key_raises_naming_it(toml: str, named: str):
     ('[paths]\nwriteRoots = ["C:/a", 1]', "paths.writeRoots"),
     ('[env]\nX = 1', "env.X"),
     ('[sql]\nport = "5432"', "sql.port"),
+    ('[semaphores]\nenabled = "false"', "semaphores.enabled"),
+    ('[semaphores]\nenabled = 0', "semaphores.enabled"),
+    ('[semaphores]\nttlSeconds = true', "semaphores.ttlSeconds"),
 ])
 def test_a_wrong_type_raises_naming_the_key(toml: str, named: str):
     with pytest.raises(ConfigError) as e:

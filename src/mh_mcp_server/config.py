@@ -60,6 +60,16 @@ port = 5432
 user = "mh_mcp_ro"
 database = "mh"
 passwordVariable = "MH_MCP_SQL_PASSWORD"
+
+# semaphores (0.1.15): resources two chats must not build at the same time - a second `mvn` rewrites target/ under the
+# first one's JVM. A `mavenDirs` entry is one resource as a whole; under a `mavenMultiApp` root each directory holding a
+# pom.xml or pom-commons.xml is its own resource, the nearest one at or above the path. A semaphore unused for
+# ttlSeconds is gone. enabled = false: no semaphore tools, no tripwire - mh-mcp works as 0.1.14 did.
+[semaphores]
+enabled = true
+ttlSeconds = 600
+mavenDirs = ["C:/sandbox/_work/doc-processing-angular/java/legal", "C:/sandbox/_work/doc-processing-angular/java/call-cc-func"]
+mavenMultiApp = ["C:/sandbox/_work/metaheuristic", "C:/sandbox/_work/jcons"]
 """
 
 # table -> key -> kind. A table or key absent here is unknown, and unknown is an error: a misspelt key must never
@@ -74,11 +84,12 @@ _SCHEMA: dict[str, dict[str, str]] = {
     "secrets": {"names": "str_list"},
     "excluded": {"paths": "str_list"},
     "sql": {"psql": "str", "host": "str", "port": "int", "user": "str", "database": "str", "passwordVariable": "str"},
+    "semaphores": {"enabled": "bool", "ttlSeconds": "int", "mavenDirs": "str_list", "mavenMultiApp": "str_list"},
 }
 # Tables whose keys are free (environment-variable names); their values must be strings.
 _FREE_TABLES = frozenset({"env"})
 
-_KIND_TEXT = {"str": "a string", "int": "an integer >= 1", "str_list": "an array of strings"}
+_KIND_TEXT = {"str": "a string", "int": "an integer >= 1", "str_list": "an array of strings", "bool": "true or false"}
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,10 @@ class Config:
     sql_user: str
     sql_database: str                 # the default database; a call may name another
     sql_password_variable: str        # the command environment's variable holding the password
+    semaphores_enabled: bool          # semaphores (0.1.15); False - no semaphore tools, no tripwire
+    semaphore_ttl_seconds: int        # a semaphore unused this long is gone
+    maven_dirs: tuple[Path, ...]      # each one MAVEN resource as a whole
+    maven_multi_app: tuple[Path, ...]  # under each, every directory holding a pom is its own MAVEN resource
 
 
 class ConfigError(Exception):
@@ -238,6 +253,8 @@ def _is_kind(kind: str, value: Any) -> bool:
         return isinstance(value, int) and not isinstance(value, bool) and value >= 1
     if kind == "str_list":
         return isinstance(value, list) and all(isinstance(v, str) for v in value)
+    if kind == "bool":
+        return isinstance(value, bool)
     raise AssertionError(f"unknown kind {kind}")
 
 
@@ -268,4 +285,8 @@ def _to_config(m: Mapping[str, Any]) -> Config:
         sql_user=m["sql"]["user"],
         sql_database=m["sql"]["database"],
         sql_password_variable=m["sql"]["passwordVariable"],
+        semaphores_enabled=m["semaphores"]["enabled"],
+        semaphore_ttl_seconds=m["semaphores"]["ttlSeconds"],
+        maven_dirs=tuple(Path(p) for p in m["semaphores"]["mavenDirs"]),
+        maven_multi_app=tuple(Path(p) for p in m["semaphores"]["mavenMultiApp"]),
     )

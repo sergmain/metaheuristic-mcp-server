@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 import anyio.to_thread
 import pydantic
@@ -25,6 +25,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 
 from mh_mcp_server import execution, files, finder, jobs, memory, transcript
+from mh_mcp_server import semaphores
 from mh_mcp_server import __version__
 from mh_mcp_server.environment import mask
 from mh_mcp_server.execution import Reply, Runtime, refusal
@@ -72,6 +73,9 @@ TOOLS_0_1_12 = TOOLS_0_1_11 + ("sqlQuery", "gitCommit")
 TOOLS_0_1_13 = TOOLS_0_1_12
 # 0.1.14: no new tool - waitJob's reply carries getMemory's reading taken when the wait ended
 TOOLS_0_1_14 = TOOLS_0_1_13
+# 0.1.15: semaphores over shared build resources - registered only while config [semaphores] enabled
+SEMAPHORE_TOOLS = ("acquireSemaphore", "releaseSemaphore", "listSemaphores")
+TOOLS_0_1_15 = TOOLS_0_1_14 + SEMAPHORE_TOOLS
 
 
 class Edit(pydantic.BaseModel):
@@ -94,6 +98,16 @@ class Range(pydantic.BaseModel):
     toLine: int | None = None
 
 
+async def _semaphore_step(step: Callable[..., Any], *args: Any) -> Any:
+    """A semaphore step beside a tool call (0.1.15): an error in it is logged and never the call's failure - the
+    semaphores are a guard, the call is the work."""
+    try:
+        return await anyio.to_thread.run_sync(step, *args)
+    except Exception:
+        log.exception("semaphore step %s failed", getattr(step, "__name__", step))
+        return None
+
+
 def build_server(rt: Runtime) -> FastMCP:
     mcp = FastMCP("mh-mcp", log_level="WARNING")
 
@@ -111,20 +125,40 @@ def build_server(rt: Runtime) -> FastMCP:
 
     @mcp.tool(name="executeCommand", structured_output=False)
     async def execute_command(sessionId: str, command: str, cwd: str | None = None,
-                              timeoutSeconds: int | None = None, maxLines: int | None = None) -> Reply:
+                              timeoutSeconds: int | None = None, maxLines: int | None = None,
+                              semaphore: str | None = None) -> Reply:
         """Runs PowerShell text (one statement, a ; or && / || chain, a pipeline, a multi-line script) in a fresh
         pwsh in the session's working directory and environment; cd and $env: changes persist in the session.
         `cwd` applies to this call only. Waits up to timeoutSeconds; a command still running then continues as a job
         (state "running", jobId) and is never killed. Content 0: JSON header (exitCode, cwd, lines, logPath, ...);
-        content 1: the output, head and tail kept within maxLines."""
-        return await execution.execute_command(rt, sessionId, command, cwd, timeoutSeconds, maxLines)
+        content 1: the output, head and tail kept within maxLines. `semaphore`: the id acquireSemaphore returned -
+        refreshes it, and a job the call leaves running joins it; an `mvn` command reaching a resource another
+        semaphore holds is refused SEMAPHORE_HELD (ignored while semaphores are disabled)."""
+        if rt.config.semaphores_enabled:
+            refused = await _semaphore_step(semaphores.gate, rt, sessionId, command, cwd, semaphore)
+            if refused is not None:
+                return refused
+        reply = await execution.execute_command(rt, sessionId, command, cwd, timeoutSeconds, maxLines)
+        if rt.config.semaphores_enabled and semaphore is not None:
+            await _semaphore_step(semaphores.joined, rt, semaphore, sessionId, reply)
+        return reply
 
     @mcp.tool(name="startJob", structured_output=False)
-    async def start_job(sessionId: str, command: str, cwd: str | None = None, name: str | None = None) -> Reply:
+    async def start_job(sessionId: str, command: str, cwd: str | None = None, name: str | None = None,
+                        semaphore: str | None = None) -> Reply:
         """Starts PowerShell text as a background job in the session's working directory and environment and
         returns at once with its jobId and logPath. A job never blocks the session and never changes its cwd or
-        environment. Use waitJob to follow it; it is never killed."""
-        return await anyio.to_thread.run_sync(jobs.start_job, rt, sessionId, command, cwd, name)
+        environment. Use waitJob to follow it; it is never killed. `semaphore`: the id acquireSemaphore returned -
+        refreshes it and the job joins it (a waitJob on the job then refreshes it too); an `mvn` command reaching a
+        resource another semaphore holds is refused SEMAPHORE_HELD (ignored while semaphores are disabled)."""
+        if rt.config.semaphores_enabled:
+            refused = await _semaphore_step(semaphores.gate, rt, sessionId, command, cwd, semaphore)
+            if refused is not None:
+                return refused
+        reply = await anyio.to_thread.run_sync(jobs.start_job, rt, sessionId, command, cwd, name)
+        if rt.config.semaphores_enabled and semaphore is not None:
+            await _semaphore_step(semaphores.joined, rt, semaphore, sessionId, reply)
+        return reply
 
     @mcp.tool(name="waitJob", structured_output=False)
     async def wait_job(jobs: list[JobRef], mode: str = "any", maxSeconds: int | None = None,
@@ -137,8 +171,40 @@ def build_server(rt: Runtime) -> FastMCP:
         is returned twice), matched, omitted - or error JOB_NOT_FOUND for an unknown job, the others answered; and
         memory - getMemory's reading taken when the wait ended (usedGB, availableGB, totalGB, memoryLoad, commitUsedGB,
         commitFreeGB, commitLimitGB), to decide what to start next. Content 1: per job with new lines,
-        `== <sessionId>/<jobId> <state>` then its tail (maxLines per job)."""
-        return await run_wait_job(rt, [j.model_dump() for j in jobs], mode, maxSeconds, untilRegex, maxLines)
+        `== <sessionId>/<jobId> <state>` then its tail (maxLines per job). A semaphore a waited job belongs to is
+        refreshed."""
+        reply = await run_wait_job(rt, [j.model_dump() for j in jobs], mode, maxSeconds, untilRegex, maxLines)
+        if rt.config.semaphores_enabled and not reply.is_error:
+            await _semaphore_step(semaphores.touch_jobs, rt, [(j.sessionId, j.jobId) for j in jobs])
+        return reply
+
+    if rt.config.semaphores_enabled:
+        @mcp.tool(name="acquireSemaphore", structured_output=False)
+        async def acquire_semaphore(sessionId: str, type: str, path: str, ttlSeconds: int | None = None,
+                                    waitSeconds: int = 0) -> Reply:
+            """Acquires the semaphore of the protected resource `path` belongs to (type MAVEN: the Maven tree a build
+            there writes), shared by every chat. Acquired: {acquired: true, semaphore: <id>, resource, ttlSeconds} -
+            pass the id to startJob / executeCommand for every run on the resource, releaseSemaphore it when done.
+            Held by another chat: {acquired: false, resource, heldBy: {sessionId, touchedAt, expiresInSeconds, jobs}}
+            - not an error: call again, or give waitSeconds (0-58) to wait for it in this call. A semaphore is gone
+            after ttlSeconds (default 600, max 3600) without use (acquire, a call with its id, a waitJob on one of its
+            jobs) or when the mh-mcp process that created it ends. A path outside every protected resource is refused
+            NOT_PROTECTED: no semaphore is needed there."""
+            return await semaphores.acquire(rt, sessionId, type, path, ttlSeconds, waitSeconds)
+
+        @mcp.tool(name="releaseSemaphore", structured_output=False)
+        async def release_semaphore(sessionId: str, semaphore: str) -> Reply:
+            """Releases the semaphore with this id. Header: released, type, resource, jobs (their states - nothing is
+            killed). An unknown, released or expired id is refused SEMAPHORE_NOT_FOUND."""
+            return await anyio.to_thread.run_sync(semaphores.release, rt, sessionId, semaphore)
+
+        @mcp.tool(name="listSemaphores", structured_output=False)
+        async def list_semaphores(sessionId: str) -> Reply:
+            """Every live semaphore - type, resource, sessionId that acquired it, acquiredAt, touchedAt,
+            expiresInSeconds, jobs with their states; its id only to the session that acquired it - and the protected
+            resources: MAVEN dirs (each one resource) and multiApp roots (each directory with a pom.xml or
+            pom-commons.xml under them is one)."""
+            return await anyio.to_thread.run_sync(semaphores.list_semaphores, rt, sessionId)
 
     @mcp.tool(name="readFile", structured_output=False)
     async def read_file(sessionId: str, path: str | None = None, fromLine: int = 1, toLine: int | None = None,

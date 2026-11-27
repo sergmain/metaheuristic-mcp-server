@@ -9,11 +9,13 @@ FIXTURES = REPO / "tests" / "fixtures"
 SID = "20261023-181500-0000ee"
 # 0.1.9: getMemory added (was EIGHT, without it); 0.1.10: searchFiles, listFiles, fileInfo (was NINE); 0.1.11: cancelJob;
 # 0.1.12: sqlQuery, gitCommit (was thirteen)
-ALL = ["cancelJob", "editFile", "executeCommand", "fileInfo", "getMemory", "getSession", "getSessionId", "gitCommit",
-       "listFiles", "readFile", "searchFiles", "sqlQuery", "startJob", "waitJob", "writeFile"]
+# 0.1.15: acquireSemaphore, releaseSemaphore, listSemaphores - config [semaphores] enabled, the default (was fifteen)
+ALL = ["acquireSemaphore", "cancelJob", "editFile", "executeCommand", "fileInfo", "getMemory", "getSession",
+       "getSessionId", "gitCommit", "listFiles", "listSemaphores", "readFile", "releaseSemaphore", "searchFiles",
+       "sqlQuery", "startJob", "waitJob", "writeFile"]
 
 
-def test_tools_list_returns_all_fifteen_tools(tmp_path: Path):
+def test_tools_list_returns_all_eighteen_tools(tmp_path: Path):
     async def main():
         async with connect(write_home(tmp_path)) as session:
             assert sorted(t.name for t in (await session.list_tools()).tools) == ALL

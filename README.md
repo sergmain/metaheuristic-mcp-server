@@ -54,6 +54,20 @@ Since 0.1.14 `waitJob`'s header also carries `memory`: getMemory's reading, take
 "MEMORY_UNAVAILABLE", "message"}` when it cannot be read), so the chat decides what to start next from what is free
 without a separate getMemory round trip. A refused call carries none.
 
+Since 0.1.15 there are semaphores over shared build resources (`semaphores.py`): two chats building one Maven tree at
+once break each other - the second `mvn` rewrites `target/` under the first one's JVM. `acquireSemaphore(sessionId,
+type, path, ttlSeconds?, waitSeconds?)` takes the semaphore of the protected resource `path` belongs to (type `MAVEN`;
+config `[semaphores]`: a `mavenDirs` entry is one resource, under a `mavenMultiApp` root every directory holding a
+`pom.xml` or `pom-commons.xml` is its own; two resources conflict when one lies inside the other) and returns its id,
+or `acquired: false` with the holder; `waitSeconds` waits for it inside the call. The chat passes the id to
+`startJob` / `executeCommand` (`semaphore`) for every run on the resource - whichever session runs it - and
+`releaseSemaphore`s it when done; `listSemaphores` shows every live one. A semaphore is gone after `ttlSeconds`
+(default 600) without use - acquiring, a call carrying its id, a `waitJob` on one of its jobs - or once the mh-mcp
+process that created it ends. They live in `state/semaphores.json`, shared by every server process of the home
+(Desktop runs more than one) and changed only under its `.mutex`. An `mvn` command whose cwd or text reaches a
+resource another semaphore holds is refused `SEMAPHORE_HELD` - a tripwire, not a sandbox. `enabled = false`: the
+three tools are not registered and mh-mcp works as 0.1.14 did.
+
 The sections up to [Tests](#tests) hold what does not depend on the OS; [Windows](#windows) and [Linux](#linux) hold
 the configuration of each.
 
